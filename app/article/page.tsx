@@ -750,15 +750,17 @@ function ArticleContent({
                                 ) : null}
                               </Fragment>
                             ) : (
-                              <p
-                                key={`${block.id}-col-${colIdx}-text-${segIdx}`}
-                                className={styles.gridColumnText}
-                              >
-                                {renderInline(
-                                  seg.value,
-                                  `block-grid-${index}-${colIdx}-${segIdx}`
-                                )}
-                              </p>
+                              seg.value.trim() ? (
+                                <p
+                                  key={`${block.id}-col-${colIdx}-text-${segIdx}`}
+                                  className={styles.gridColumnText}
+                                >
+                                  {renderInline(
+                                    seg.value,
+                                    `block-grid-${index}-${colIdx}-${segIdx}`
+                                  )}
+                                </p>
+                              ) : null
                             )
                           )}
                         </div>
@@ -811,6 +813,8 @@ function ArticleContent({
 }
 
 export default function ArticlePage() {
+  const [mounted, setMounted] = useState(false);
+  const bgShader = "none";
   const searchParams = useSearchParams();
   const appToken = searchParams.get("appToken") ?? "";
   const tableId = searchParams.get("tableId") ?? "";
@@ -856,6 +860,10 @@ export default function ArticlePage() {
     const query = params.toString();
     return query ? `/api/article?${query}` : "/api/article";
   }, [appToken, tableId, recordId, debug]);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -943,63 +951,124 @@ export default function ArticlePage() {
     };
   }, [requestUrl]);
 
+  if (!mounted) {
+    return (
+      <div className="relative min-h-screen pb-10 pt-[72px]">
+        <div
+          className="pointer-events-none fixed inset-0 -z-10"
+          style={{
+            backgroundImage: bgShader,
+            backgroundColor: "#f3f4f6",
+            backgroundRepeat: "no-repeat",
+            backgroundSize: "cover",
+            backgroundPosition: "center center",
+          }}
+        />
+        <div className="relative mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10">
+          <article className="rounded-2xl border border-white/80 bg-white/92 p-5 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] backdrop-blur-sm sm:p-6 lg:p-8">
+            <div className="mx-auto mb-10 flex max-w-[940px] items-center justify-between">
+              <span className="inline-block h-10 w-10 animate-pulse rounded-full bg-gray-100" />
+              <span className="inline-block h-8 w-8 animate-pulse rounded-md bg-gray-100" />
+            </div>
+            <header className="mx-auto mb-4 max-w-[940px] border-b border-gray-100 pb-4">
+              <h1 className="mt-8 text-3xl font-bold text-gray-900 sm:text-4xl">
+                <span className="block h-10 w-2/3 animate-pulse rounded bg-gray-200" />
+              </h1>
+            </header>
+          </article>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gray-50 py-10">
-      <div className="relative mx-auto w-full max-w-5xl px-4 sm:px-6 lg:px-8">
-        <Link
-          href="/feishu-table"
-          className="absolute left-0 top-6 hidden -translate-x-[110%] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm transition hover:bg-gray-50 lg:inline-flex"
-        >
-          返回表格页
-        </Link>
-        <article className="rounded-xl bg-white p-5 shadow-sm sm:p-6 lg:p-7">
-          <header className="mb-8 border-b border-gray-100 pb-6">
-            <h1 className="mt-2 text-3xl font-bold text-gray-900">
+    <div className="relative min-h-screen pb-10 pt-[72px]">
+      <div
+        className="pointer-events-none fixed inset-0 -z-10"
+        style={{
+          backgroundImage: bgShader,
+          backgroundColor: "#f3f4f6",
+          backgroundRepeat: "no-repeat",
+          backgroundSize: "cover",
+          backgroundPosition: "center center",
+        }}
+      />
+      <div className="relative mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10">
+        <article className="rounded-2xl border border-white/80 bg-white/92 p-5 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] backdrop-blur-sm sm:p-6 lg:p-8">
+          <div className="mx-auto mb-10 flex max-w-[940px] items-center justify-between">
+            <Link
+              href="/feishu-table"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-5 w-5"
+              >
+                <path d="M19 12H5" />
+                <path d="M12 19l-7-7 7-7" />
+              </svg>
+            </Link>
+            {article?.docsUrl ? (
+              <a
+                href={article.docsUrl}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="打开原始飞书文档"
+                title="打开原始飞书文档"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 text-gray-500 transition hover:bg-gray-50 hover:text-blue-600"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                >
+                  <path d="M14 3h7v7" />
+                  <path d="M10 14L21 3" />
+                  <path d="M21 14v7h-7" />
+                  <path d="M3 10v11h11" />
+                </svg>
+              </a>
+            ) : (
+              <span className="inline-block h-8 w-8 animate-pulse rounded-md bg-gray-100" />
+            )}
+          </div>
+          <header className="mx-auto mb-4 max-w-[940px] border-b border-gray-100 pb-4">
+            <h1 className="mt-8 text-3xl font-bold text-gray-900 sm:text-4xl">
               {!article ? (
-                <span className="block h-9 w-2/3 animate-pulse rounded bg-gray-200" />
+                <span className="block h-10 w-2/3 animate-pulse rounded bg-gray-200" />
               ) : (
                 articleTitle
               )}
             </h1>
-            <div className="mt-3 flex items-center justify-end">
-              {article?.docsUrl ? (
-                <a
-                  href={article.docsUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label="打开原始飞书文档"
-                  title="打开原始飞书文档"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 text-gray-500 transition hover:bg-gray-50 hover:text-blue-600"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="h-4 w-4"
-                  >
-                    <path d="M14 3h7v7" />
-                    <path d="M10 14L21 3" />
-                    <path d="M21 14v7h-7" />
-                    <path d="M3 10v11h11" />
-                  </svg>
-                </a>
-              ) : (
-                <span className="inline-block h-8 w-8 animate-pulse rounded-md bg-gray-100" />
-              )}
-            </div>
           </header>
 
           {loading && !article && (
-            <div className="space-y-4">
-              <div className="h-6 w-2/3 animate-pulse rounded bg-gray-200" />
-              <div className="h-4 w-full animate-pulse rounded bg-gray-100" />
-              <div className="h-4 w-11/12 animate-pulse rounded bg-gray-100" />
-              <div className="h-4 w-5/6 animate-pulse rounded bg-gray-100" />
-              <div className="h-40 w-full animate-pulse rounded-xl bg-gray-100" />
-            </div>
+            <section className="space-y-4">
+              <div className={`${styles.content} ${styles.docPreset}`}>
+                <div className={styles.heading2}>
+                  <div className={styles.skeletonLine} style={{ width: "42%" }} />
+                </div>
+                <p className={styles.textBlock}>
+                  <span className={styles.skeletonLine} style={{ width: "96%" }} />
+                </p>
+                <p className={styles.textBlock}>
+                  <span className={styles.skeletonLine} style={{ width: "88%" }} />
+                </p>
+                <div className={styles.imageBlockWrap}>
+                  <div className={styles.skeletonImageArea} />
+                </div>
+              </div>
+            </section>
           )}
           {error && <p className="text-red-600">{error}</p>}
 
@@ -1008,10 +1077,9 @@ export default function ArticlePage() {
           )}
 
           {article?.partial && !streamComplete && (
-            <div className="mt-6 flex items-center gap-3 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
-              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-blue-400 border-t-transparent" />
-              <div className="h-2 w-28 animate-pulse rounded bg-blue-200" />
-              <div className="h-2 w-20 animate-pulse rounded bg-blue-100" />
+            <div className={styles.skeletonCallout}>
+              <div className={styles.skeletonLine} style={{ width: "32%" }} />
+              <div className={styles.skeletonLineShort} />
             </div>
           )}
         </article>
