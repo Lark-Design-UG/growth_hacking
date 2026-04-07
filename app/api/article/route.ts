@@ -1,0 +1,343 @@
+import {
+  getBaseRecord,
+  getDocumentBlocks,
+  getDocumentContent,
+  getDocumentMeta,
+} from "@/lib/feishu/client";
+
+const DEBUG_DOCS_URL =
+  "https://bytedance.larkoffice.com/wiki/JCKEw8gDBiupjkko8ZCcOtYOnLd";
+const DEBUG_DOCUMENT_ID = "JCKEw8gDBiupjkko8ZCcOtYOnLd";
+const GLOBAL_DEBUG_ENABLED =
+  process.env.ARTICLE_DEBUG === "1" ||
+  process.env.ARTICLE_DEBUG?.toLowerCase() === "true";
+const ARTICLE_CACHE_TTL_MS = 30_000;
+const articleCache = new Map<string, { expiresAt: number; data: unknown }>();
+
+function collectDocUrl(value: unknown): string | null {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    const match = value.match(/https?:\/\/[^\s]+/);
+    const url = match?.[0] ?? value;
+    if (url.includes("/docx/")) return url;
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = collectDocUrl(item);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  if (typeof value === "object") {
+    for (const val of Object.values(value as Record<string, unknown>)) {
+      const hit = collectDocUrl(val);
+      if (hit) return hit;
+    }
+  }
+
+  return null;
+}
+
+function extractDocumentId(url: string): string | null {
+  const match = url.match(/\/docx\/([A-Za-z0-9]+)/);
+  return match?.[1] ?? null;
+}
+
+function extractImageUrls(content: string): string[] {
+  const urls = new Set<string>();
+
+  const markdownImageRegex = /!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/g;
+  let markdownMatch: RegExpExecArray | null = null;
+  while ((markdownMatch = markdownImageRegex.exec(content)) !== null) {
+    urls.add(markdownMatch[1]);
+  }
+
+  const htmlImageRegex = /<img[^>]*src=["'](https?:\/\/[^"']+)["'][^>]*>/g;
+  let htmlMatch: RegExpExecArray | null = null;
+  while ((htmlMatch = htmlImageRegex.exec(content)) !== null) {
+    urls.add(htmlMatch[1]);
+  }
+
+  const plainImageRegex =
+    /(https?:\/\/[^\s)]+?\.(?:png|jpg|jpeg|gif|webp|bmp|svg))/gi;
+  let plainMatch: RegExpExecArray | null = null;
+  while ((plainMatch = plainImageRegex.exec(content)) !== null) {
+    urls.add(plainMatch[1]);
+  }
+
+  return Array.from(urls);
+}
+
+type DocxElement = {
+  text_run?: {
+    content?: string;
+    text_element_style?: {
+      bold?: boolean;
+      italic?: boolean;
+      inline_code?: boolean;
+    };
+    link?: { url?: string };
+  };
+};
+
+type DocxBlock = {
+  block_id?: string;
+  block_type?: number;
+  heading1?: { elements?: DocxElement[] };
+  heading2?: { elements?: DocxElement[] };
+  heading3?: { elements?: DocxElement[] };
+  heading4?: { elements?: DocxElement[] };
+  heading5?: { elements?: DocxElement[] };
+  heading6?: { elements?: DocxElement[] };
+  text?: { elements?: DocxElement[] };
+  bullet?: { elements?: DocxElement[] };
+  ordered?: { elements?: DocxElement[] };
+  callout?: { elements?: DocxElement[] };
+  quote_container?: { elements?: DocxElement[] };
+  image?: { token?: string; caption?: { content?: string } };
+  divider?: Record<string, unknown>;
+  grid?: Record<string, unknown>;
+  children?: string[];
+};
+
+type ArticleBlockPayload = {
+  id: string;
+  type: string;
+  text?: string;
+  level?: number;
+  imageUrl?: string;
+  imageToken?: string;
+  caption?: string;
+  columns?: string[];
+  raw?: unknown;
+};
+
+function renderElementsToMarkdown(elements: DocxElement[] = []): string {
+  return elements
+    .map((el) => {
+      const run = el.text_run;
+      if (!run?.content) return "";
+
+      let text = run.content;
+      const url = run.link?.url;
+      const style = run.text_element_style;
+
+      if (style?.inline_code) text = `\`${text}\``;
+      if (style?.italic) text = `*${text}*`;
+      if (style?.bold) text = `**${text}**`;
+      if (url) text = `[${text}](${url})`;
+
+      return text;
+    })
+    .join("");
+}
+
+function blockToMarkdownLine(block: DocxBlock): string | null {
+  if (block.heading1) return `# ${renderElementsToMarkdown(block.heading1.elements)}`;
+  if (block.heading2) return `## ${renderElementsToMarkdown(block.heading2.elements)}`;
+  if (block.heading3) return `### ${renderElementsToMarkdown(block.heading3.elements)}`;
+  if (block.heading4) return `#### ${renderElementsToMarkdown(block.heading4.elements)}`;
+  if (block.heading5) return `##### ${renderElementsToMarkdown(block.heading5.elements)}`;
+  if (block.heading6) return `###### ${renderElementsToMarkdown(block.heading6.elements)}`;
+  if (block.bullet) return `- ${renderElementsToMarkdown(block.bullet.elements)}`;
+  if (block.ordered) return `1. ${renderElementsToMarkdown(block.ordered.elements)}`;
+  if (block.callout) return `> ${renderElementsToMarkdown(block.callout.elements)}`;
+  if (block.quote_container)
+    return `> ${renderElementsToMarkdown(block.quote_container.elements)}`;
+  if (block.image?.token) {
+    const caption = block.image.caption?.content ?? "";
+    const url = `/api/feishu-image?token=${encodeURIComponent(block.image.token)}`;
+    return `![${caption}](${url})`;
+  }
+  if (block.text) return renderElementsToMarkdown(block.text.elements);
+  if (block.block_type === 19) return "---";
+  return null;
+}
+
+function normalizeDocxBlock(block: DocxBlock): ArticleBlockPayload {
+  const id = block.block_id ?? `${Date.now()}-${Math.random()}`;
+  if (block.heading1)
+    return { id, type: "heading1", text: renderElementsToMarkdown(block.heading1.elements), level: 1 };
+  if (block.heading2)
+    return { id, type: "heading2", text: renderElementsToMarkdown(block.heading2.elements), level: 2 };
+  if (block.heading3)
+    return { id, type: "heading3", text: renderElementsToMarkdown(block.heading3.elements), level: 3 };
+  if (block.heading4)
+    return { id, type: "heading4", text: renderElementsToMarkdown(block.heading4.elements), level: 4 };
+  if (block.heading5)
+    return { id, type: "heading5", text: renderElementsToMarkdown(block.heading5.elements), level: 5 };
+  if (block.heading6)
+    return { id, type: "heading6", text: renderElementsToMarkdown(block.heading6.elements), level: 6 };
+  if (block.text) return { id, type: "text", text: renderElementsToMarkdown(block.text.elements) };
+  if (block.bullet)
+    return { id, type: "bullet", text: renderElementsToMarkdown(block.bullet.elements) };
+  if (block.ordered)
+    return { id, type: "ordered", text: renderElementsToMarkdown(block.ordered.elements) };
+  if (block.callout)
+    return { id, type: "callout", text: renderElementsToMarkdown(block.callout.elements) };
+  if (block.quote_container)
+    return {
+      id,
+      type: "quote_container",
+      text: renderElementsToMarkdown(block.quote_container.elements),
+    };
+  if (block.image?.token) {
+    return {
+      id,
+      type: "image",
+      imageUrl: `/api/feishu-image?token=${encodeURIComponent(block.image.token)}`,
+      imageToken: block.image.token,
+      caption: block.image.caption?.content ?? "",
+    };
+  }
+  if (block.divider || block.block_type === 19) return { id, type: "divider" };
+  if (block.grid) return { id, type: "grid", raw: block.grid };
+  if (block.children) return { id, type: "children", raw: block.children };
+  return { id, type: `unknown_${block.block_type ?? "na"}`, raw: block };
+}
+
+function extractTextFromBlockTree(
+  block: DocxBlock | undefined,
+  blockById: Map<string, DocxBlock>,
+  depth = 0
+): string {
+  if (!block || depth > 6) return "";
+  const imageLine = block.image?.token
+    ? `![${block.image.caption?.content ?? ""}](/api/feishu-image?token=${encodeURIComponent(
+        block.image.token
+      )})`
+    : "";
+  const own =
+    renderElementsToMarkdown(block.heading1?.elements) ||
+    renderElementsToMarkdown(block.heading2?.elements) ||
+    renderElementsToMarkdown(block.heading3?.elements) ||
+    renderElementsToMarkdown(block.heading4?.elements) ||
+    renderElementsToMarkdown(block.heading5?.elements) ||
+    renderElementsToMarkdown(block.heading6?.elements) ||
+    renderElementsToMarkdown(block.text?.elements) ||
+    renderElementsToMarkdown(block.bullet?.elements) ||
+    renderElementsToMarkdown(block.ordered?.elements) ||
+    renderElementsToMarkdown(block.callout?.elements) ||
+    renderElementsToMarkdown(block.quote_container?.elements) ||
+    imageLine;
+
+  const childText = (block.children ?? [])
+    .map((childId) => extractTextFromBlockTree(blockById.get(childId), blockById, depth + 1))
+    .filter(Boolean)
+    .join("\n");
+
+  return [own, childText].filter(Boolean).join("\n");
+}
+
+export async function GET(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const debug = searchParams.get("debug") === "1" || GLOBAL_DEBUG_ENABLED;
+    const appToken = searchParams.get("appToken");
+    const tableId = searchParams.get("tableId");
+    const recordId = searchParams.get("recordId");
+
+    if (!debug && (!appToken || !tableId || !recordId)) {
+      return Response.json(
+        { ok: false, error: "Missing appToken, tableId or recordId" },
+        { status: 400 }
+      );
+    }
+
+    let docsUrl = DEBUG_DOCS_URL;
+    let documentId = DEBUG_DOCUMENT_ID;
+
+    if (!debug) {
+      const recordData = await getBaseRecord(appToken!, tableId!, recordId!);
+      const record = (recordData as {
+        record?: { fields?: Record<string, unknown> };
+      }).record;
+      const fields = record?.fields ?? {};
+      docsUrl = collectDocUrl(fields) ?? "";
+
+      if (!docsUrl) {
+        return Response.json(
+          { ok: false, error: "No docs link found in record fields" },
+          { status: 404 }
+        );
+      }
+
+      documentId = extractDocumentId(docsUrl) ?? "";
+      if (!documentId) {
+        return Response.json(
+          { ok: false, error: "Invalid docs link format" },
+          { status: 400 }
+        );
+      }
+    }
+
+    const cacheKey = `${documentId}|${recordId ?? "debug"}`;
+    const cached = articleCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return Response.json({ ok: true, data: cached.data });
+    }
+
+    const blocksData = await getDocumentBlocks(documentId);
+    const metaData = await getDocumentMeta(documentId);
+    const allBlocks = blocksData.items as DocxBlock[];
+    const rootBlocks = (blocksData.rootItems as DocxBlock[]) || allBlocks;
+    const blockById = new Map<string, DocxBlock>();
+    for (const b of allBlocks) {
+      if (b.block_id) blockById.set(b.block_id, b);
+    }
+
+    const blockLines = rootBlocks
+      .map(blockToMarkdownLine)
+      .filter((line): line is string => Boolean(line));
+    let content = blockLines.join("\n\n");
+    if (!content.trim()) {
+      // Fallback only when block API returns no visible text.
+      const docData = await getDocumentContent(documentId);
+      content =
+        (docData as { content?: string }).content ??
+        JSON.stringify(docData, null, 2);
+    }
+    const imageUrls = extractImageUrls(content);
+    const blocks = rootBlocks.map((block) => {
+      const normalized = normalizeDocxBlock(block);
+      if (normalized.type === "callout" && !normalized.text) {
+        normalized.text = extractTextFromBlockTree(block, blockById);
+      }
+      if (normalized.type === "quote_container" && !normalized.text) {
+        normalized.text = extractTextFromBlockTree(block, blockById);
+      }
+      if (normalized.type === "grid") {
+        normalized.columns = (block.children ?? []).map((childId) =>
+          extractTextFromBlockTree(blockById.get(childId), blockById)
+        );
+      }
+      return normalized;
+    });
+
+    const data = {
+      recordId: recordId ?? "debug",
+      docsUrl,
+      documentId,
+      docTitle: metaData.document?.title ?? "",
+      debug,
+      content,
+      imageUrls,
+      blocks,
+    };
+    articleCache.set(cacheKey, {
+      expiresAt: Date.now() + ARTICLE_CACHE_TTL_MS,
+      data,
+    });
+
+    return Response.json({ ok: true, data });
+  } catch (error) {
+    return Response.json(
+      { ok: false, error: String(error) },
+      { status: 500 }
+    );
+  }
+}

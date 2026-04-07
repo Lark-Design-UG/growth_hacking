@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 type BaseRecord = {
@@ -12,6 +13,34 @@ type BaseData = {
   total: number;
   has_more: boolean;
 };
+
+function collectDocUrl(value: unknown): string | null {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    const match = value.match(/https?:\/\/[^\s]+/);
+    const url = match?.[0] ?? value;
+    if (url.includes("/docx/")) return url;
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = collectDocUrl(item);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  if (typeof value === "object") {
+    for (const val of Object.values(value as Record<string, unknown>)) {
+      const hit = collectDocUrl(val);
+      if (hit) return hit;
+    }
+  }
+
+  return null;
+}
 
 export default function FeishuTablePage() {
   const [data, setData] = useState<BaseData | null>(null);
@@ -117,6 +146,9 @@ export default function FeishuTablePage() {
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Record ID
                     </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Article
+                    </th>
                     {getFieldKeys().map((key) => (
                       <th
                         key={key}
@@ -132,6 +164,22 @@ export default function FeishuTablePage() {
                     <tr key={record.record_id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {record.record_id}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {collectDocUrl(record.fields) ? (
+                          <Link
+                            href={`/article?appToken=${encodeURIComponent(
+                              appToken
+                            )}&tableId=${encodeURIComponent(
+                              tableId
+                            )}&recordId=${encodeURIComponent(record.record_id)}`}
+                            className="text-blue-600 hover:underline"
+                          >
+                            查看文章
+                          </Link>
+                        ) : (
+                          <span className="text-gray-400">无 docs 链接</span>
+                        )}
                       </td>
                       {getFieldKeys().map((key) => (
                         <td
