@@ -16,7 +16,7 @@ const PRESET_DOCUMENT_ID = "JCKEw8gDBiupjkko8ZCcOtYOnLd";
 
 type ContentSegment =
   | { type: "text"; value: string }
-  | { type: "image"; value: string };
+  | { type: "image"; value: string; alt?: string };
 type ArticleBlock =
   | { type: "heading"; text: string; level: number }
   | { type: "paragraph"; text: string }
@@ -36,11 +36,13 @@ type ArticleApiData = {
   debug?: boolean;
   content: string;
   imageUrls?: string[];
+  partial?: boolean;
   blocks?: {
     id: string;
     type: string;
     text?: string;
     level?: number;
+    rows?: string[][];
     imageUrl?: string;
     imageToken?: string;
     caption?: string;
@@ -50,11 +52,112 @@ type ArticleApiData = {
 };
 
 type RenderCtx = { blockIndex: number };
+type MergedCell = { text: string; rowSpan?: number; colSpan?: number };
+
+function buildRowSpanTable(rows: string[][]): MergedCell[][] {
+  if (!rows.length) return [];
+  const colCount = Math.max(...rows.map((r) => r.length));
+  const normalized = rows.map((r) =>
+    Array.from({ length: colCount }, (_, i) => (r[i] ?? "").trim())
+  );
+
+  const result: MergedCell[][] = normalized.map((r) =>
+    r.map((text) => ({ text }))
+  );
+
+  // Heuristic: empty cell under a non-empty cell in same column is treated as merged continuation.
+  // To avoid over-merging genuinely empty columns, require current row to have visible content elsewhere.
+  // Vertical merge is only applied to first column to avoid over-merging
+  // data columns in complex comparison tables.
+  for (let c = 0; c < Math.min(colCount, 1); c++) {
+    let anchorRow = -1;
+    for (let r = 0; r < normalized.length; r++) {
+      const text = normalized[r][c];
+      if (text) {
+        anchorRow = r;
+        continue;
+      }
+      const rowHasOtherContent = normalized[r].some((v, idx) => idx !== c && Boolean(v));
+      if (anchorRow >= 0 && rowHasOtherContent) {
+        result[anchorRow][c].rowSpan = (result[anchorRow][c].rowSpan ?? 1) + 1;
+        result[r][c] = { text: "", rowSpan: 0 };
+      } else {
+        anchorRow = -1;
+      }
+    }
+  }
+
+  // Horizontal merge (colSpan): merge consecutive empty cells to the left anchor.
+  // Only merge when current row has at least one visible cell to avoid collapsing fully empty rows.
+  for (let r = 0; r < normalized.length; r++) {
+    const rowHasAnyContent = normalized[r].some(Boolean);
+    if (!rowHasAnyContent) continue;
+
+    let anchorCol = -1;
+    for (let c = 0; c < colCount; c++) {
+      const cell = result[r][c];
+      if (cell.rowSpan === 0) continue; // already consumed by vertical merge
+
+      if (cell.text) {
+        anchorCol = c;
+        continue;
+      }
+
+      if (anchorCol >= 0) {
+        result[r][anchorCol].colSpan = (result[r][anchorCol].colSpan ?? 1) + 1;
+        result[r][c] = { text: "", colSpan: 0 };
+      }
+    }
+  }
+
+  return result;
+}
+
+function renderRichCellContent(text: string, keyPrefix: string): ReactNode[] {
+  const segments = parseContentSegments(text);
+  const nodes: ReactNode[] = [];
+  let idx = 0;
+
+  for (const seg of segments) {
+    if (seg.type === "image") {
+      nodes.push(
+        <LazyImage
+          key={`${keyPrefix}-img-${idx++}`}
+          src={seg.value}
+          alt={seg.alt || `${keyPrefix}-image`}
+          className={styles.gridColumnImage}
+        />
+      );
+      if (seg.alt?.trim()) {
+        nodes.push(
+          <p key={`${keyPrefix}-cap-${idx++}`} className={styles.imageCaption}>
+            {seg.alt.trim()}
+          </p>
+        );
+      }
+      continue;
+    }
+    const lines = seg.value.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    if (!lines.length) continue;
+    for (const line of lines) {
+      nodes.push(
+        <p key={`${keyPrefix}-txt-${idx++}`} className={styles.gridColumnText}>
+          {renderInline(line, `${keyPrefix}-inline-${idx}`)}
+        </p>
+      );
+    }
+  }
+
+  if (!nodes.length) {
+    nodes.push(<Fragment key={`${keyPrefix}-empty`}>{renderInline(text, `${keyPrefix}-plain`)}</Fragment>);
+  }
+  return nodes;
+}
 
 function parseContentSegments(content: string): ContentSegment[] {
   const segments: ContentSegment[] = [];
   const imageRegex =
-    /!\[[^\]]*]\(((?:https?:\/\/|\/)[^)\s]+)\)|<img[^>]*src=["']((?:https?:\/\/|\/)[^"']+)["'][^>]*>/gi;
+    /!\[([^\]]*)]\(((?:https?:\/\/|\/)[^)\s]+)\)|<img[^>]*src=["']((?:https?:\/\/|\/)[^"']+)["'][^>]*>/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null = null;
 
@@ -63,9 +166,10 @@ function parseContentSegments(content: string): ContentSegment[] {
     if (textPart) {
       segments.push({ type: "text", value: textPart });
     }
-    const imageUrl = match[1] ?? match[2];
+    const markdownAlt = match[1] ?? "";
+    const imageUrl = match[2] ?? match[3];
     if (imageUrl) {
-      segments.push({ type: "image", value: imageUrl });
+      segments.push({ type: "image", value: imageUrl, alt: markdownAlt });
     }
     lastIndex = imageRegex.lastIndex;
   }
@@ -432,6 +536,32 @@ function renderBlock(block: ArticleBlock, ctx: RenderCtx): ReactNode {
   }
 }
 
+function SkeletonCallout() {
+  return (
+    <div className={styles.skeletonCallout}>
+      <div className={styles.skeletonLine} style={{ width: "80%" }} />
+      <div className={styles.skeletonLine} style={{ width: "60%" }} />
+    </div>
+  );
+}
+
+function SkeletonGrid({ cols }: { cols: number }) {
+  return (
+    <div
+      className={styles.skeletonGrid}
+      style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}
+    >
+      {Array.from({ length: cols }).map((_, i) => (
+        <div key={i} className={styles.skeletonGridCol}>
+          <div className={styles.skeletonImageArea} />
+          <div className={styles.skeletonLine} style={{ width: "70%" }} />
+          <div className={styles.skeletonLineShort} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ArticleContent({
   article,
   blocks,
@@ -439,18 +569,11 @@ function ArticleContent({
   article: ArticleApiData;
   blocks: ArticleBlock[];
 }) {
+  const isPartial = article.partial === true;
   const isPresetDoc = article.documentId === PRESET_DOCUMENT_ID;
   const blockPayloads = article.blocks ?? [];
   return (
     <section className="space-y-4">
-      <a
-        href={article.docsUrl}
-        target="_blank"
-        rel="noreferrer"
-        className="inline-block text-sm text-blue-600 hover:underline"
-      >
-        打开原始飞书文档
-      </a>
       <div className={`${styles.content} ${isPresetDoc ? styles.docPreset : ""}`}>
         {blockPayloads.length
           ? blockPayloads.map((block, index) => {
@@ -500,6 +623,9 @@ function ArticleContent({
                 );
               }
               if (block.type === "callout") {
+                if (!block.text?.trim() && isPartial) {
+                  return <SkeletonCallout key={block.id} />;
+                }
                 return (
                   <div key={block.id} className={styles.calloutBlock}>
                     {renderInline(block.text ?? "", `block-callout-${index}`)}
@@ -507,6 +633,9 @@ function ArticleContent({
                 );
               }
               if (block.type === "quote_container") {
+                if (!block.text?.trim() && isPartial) {
+                  return <SkeletonCallout key={block.id} />;
+                }
                 return (
                   <blockquote key={block.id} className={styles.quoteBlock}>
                     {renderInline(block.text ?? "", `block-quote-${index}`)}
@@ -532,8 +661,68 @@ function ArticleContent({
                   </figure>
                 );
               }
+              if (block.type === "table") {
+                const rows = block.rows ?? [];
+                const mergedRows = buildRowSpanTable(rows);
+                const [header, ...body] = mergedRows;
+                return (
+                  <div key={block.id} className={styles.tableWrap}>
+                    <table className={styles.table}>
+                      {header?.length ? (
+                        <thead>
+                          <tr>
+                            {header.map((cell, cellIdx) =>
+                              cell.rowSpan === 0 || cell.colSpan === 0 ? null : (
+                                <th
+                                  key={`${block.id}-th-${cellIdx}`}
+                                  className={styles.th}
+                                  rowSpan={cell.rowSpan && cell.rowSpan > 1 ? cell.rowSpan : undefined}
+                                  colSpan={cell.colSpan && cell.colSpan > 1 ? cell.colSpan : undefined}
+                                >
+                                  {renderRichCellContent(
+                                    cell.text,
+                                    `block-table-th-${index}-${cellIdx}`
+                                  )}
+                                </th>
+                              )
+                            )}
+                          </tr>
+                        </thead>
+                      ) : null}
+                      <tbody>
+                        {body.map((row, rowIdx) => (
+                          <tr key={`${block.id}-tr-${rowIdx}`}>
+                            {row.map((cell, cellIdx) =>
+                              cell.rowSpan === 0 || cell.colSpan === 0 ? null : (
+                                <td
+                                  key={`${block.id}-td-${rowIdx}-${cellIdx}`}
+                                  className={styles.td}
+                                  rowSpan={cell.rowSpan && cell.rowSpan > 1 ? cell.rowSpan : undefined}
+                                  colSpan={cell.colSpan && cell.colSpan > 1 ? cell.colSpan : undefined}
+                                >
+                                  {renderRichCellContent(
+                                    cell.text,
+                                    `block-table-td-${index}-${rowIdx}-${cellIdx}`
+                                  )}
+                                </td>
+                              )
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              }
               if (block.type === "grid") {
                 const columns = block.columns ?? [];
+                // In partial state, columns may be ["","",""] — all empty strings
+                const hasColumnContent = columns.some((c) => c.trim().length > 0);
+                if (!hasColumnContent && isPartial) {
+                  const colCount =
+                    (block.raw as { column_size?: number } | null)?.column_size ?? 2;
+                  return <SkeletonGrid key={block.id} cols={colCount} />;
+                }
                 if (columns.length) {
                   return (
                     <div
@@ -550,12 +739,16 @@ function ArticleContent({
                         <div key={`${block.id}-col-${colIdx}`} className={styles.gridColumn}>
                           {parseContentSegments(column).map((seg, segIdx) =>
                             seg.type === "image" ? (
-                              <LazyImage
-                                key={`${block.id}-col-${colIdx}-img-${segIdx}`}
-                                src={seg.value}
-                                alt={`grid-image-${colIdx}-${segIdx}`}
-                                className={styles.gridColumnImage}
-                              />
+                              <Fragment key={`${block.id}-col-${colIdx}-img-${segIdx}`}>
+                                <LazyImage
+                                  src={seg.value}
+                                  alt={seg.alt || `grid-image-${colIdx}-${segIdx}`}
+                                  className={styles.gridColumnImage}
+                                />
+                                {seg.alt?.trim() ? (
+                                  <p className={styles.imageCaption}>{seg.alt.trim()}</p>
+                                ) : null}
+                              </Fragment>
                             ) : (
                               <p
                                 key={`${block.id}-col-${colIdx}-text-${segIdx}`}
@@ -625,6 +818,7 @@ export default function ArticlePage() {
   const debug = searchParams.get("debug") === "1";
 
   const [loading, setLoading] = useState(false);
+  const [streamComplete, setStreamComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [article, setArticle] = useState<ArticleApiData | null>(null);
   const articleBlocks = useMemo(
@@ -645,7 +839,7 @@ export default function ArticlePage() {
     const fromBlocks = article?.blocks?.find((block) =>
       block.type.startsWith("heading")
     )?.text;
-    return fromBlocks?.trim() || "飞书文档文章页";
+    return fromBlocks?.trim() || "";
   }, [article]);
 
   const requestUrl = useMemo(() => {
@@ -664,25 +858,89 @@ export default function ArticlePage() {
   }, [appToken, tableId, recordId, debug]);
 
   useEffect(() => {
-    const fetchArticle = async () => {
+    let cancelled = false;
+
+    const streamArticle = async () => {
       setLoading(true);
+      setStreamComplete(false);
       setError(null);
+      setArticle(null);
+
+      const streamUrl =
+        requestUrl + (requestUrl.includes("?") ? "&" : "?") + "stream=1";
+
       try {
-        const res = await fetch(requestUrl);
-        const result = await res.json();
-        if (!result.ok) {
-          setError(result.error ?? "加载文章失败");
-          return;
+        const res = await fetch(streamUrl);
+        if (!res.ok || !res.body) {
+          throw new Error(`HTTP ${res.status}`);
         }
-        setArticle(result.data);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || cancelled) break;
+
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const msg = JSON.parse(line) as {
+              type: string;
+              data?: ArticleApiData;
+              error?: string;
+              // partial message fields
+              recordId?: string;
+              docsUrl?: string;
+              documentId?: string;
+              docTitle?: string;
+              debug?: boolean;
+              content?: string;
+              imageUrls?: string[];
+              blocks?: ArticleApiData["blocks"];
+            };
+
+            if (cancelled) break;
+
+            if (msg.type === "partial") {
+              setArticle({
+                recordId: msg.recordId ?? "",
+                docsUrl: msg.docsUrl ?? "",
+                documentId: msg.documentId ?? "",
+                docTitle: msg.docTitle,
+                debug: msg.debug,
+                content: msg.content ?? "",
+                imageUrls: msg.imageUrls ?? [],
+                blocks: msg.blocks,
+                partial: true,
+              });
+              setLoading(false);
+            } else if (msg.type === "complete") {
+              setArticle(msg.data ?? null);
+              setStreamComplete(true);
+              setLoading(false);
+            } else if (msg.type === "error") {
+              setError(msg.error ?? "加载文章失败");
+              setLoading(false);
+            }
+          }
+        }
       } catch (err) {
-        setError(String(err));
-      } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setError(String(err));
+          setLoading(false);
+        }
       }
     };
 
-    fetchArticle();
+    streamArticle();
+    return () => {
+      cancelled = true;
+    };
   }, [requestUrl]);
 
   return (
@@ -696,49 +954,65 @@ export default function ArticlePage() {
         </Link>
         <article className="rounded-xl bg-white p-5 shadow-sm sm:p-6 lg:p-7">
           <header className="mb-8 border-b border-gray-100 pb-6">
-            <p className="text-sm text-gray-500">Article Template</p>
-            <h1 className="mt-2 text-3xl font-bold text-gray-900">{articleTitle}</h1>
-            <div className="mt-3 flex items-center gap-4 text-sm">
-              <a
-                href="/article?debug=1"
-                className="text-blue-600 hover:underline"
-              >
-                调试模式（固定文档）
-              </a>
-              {debug && appToken && tableId && recordId && (
+            <h1 className="mt-2 text-3xl font-bold text-gray-900">
+              {!article ? (
+                <span className="block h-9 w-2/3 animate-pulse rounded bg-gray-200" />
+              ) : (
+                articleTitle
+              )}
+            </h1>
+            <div className="mt-3 flex items-center justify-end">
+              {article?.docsUrl ? (
                 <a
-                  href={`/article?appToken=${encodeURIComponent(
-                    appToken
-                  )}&tableId=${encodeURIComponent(
-                    tableId
-                  )}&recordId=${encodeURIComponent(recordId)}`}
-                  className="text-gray-600 hover:underline"
+                  href={article.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="打开原始飞书文档"
+                  title="打开原始飞书文档"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 text-gray-500 transition hover:bg-gray-50 hover:text-blue-600"
                 >
-                  返回记录文档模式
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-4 w-4"
+                  >
+                    <path d="M14 3h7v7" />
+                    <path d="M10 14L21 3" />
+                    <path d="M21 14v7h-7" />
+                    <path d="M3 10v11h11" />
+                  </svg>
                 </a>
+              ) : (
+                <span className="inline-block h-8 w-8 animate-pulse rounded-md bg-gray-100" />
               )}
             </div>
-            {article && (
-              <p className="mt-3 text-sm text-gray-500">
-                Record: {article.recordId} | Doc: {article.documentId}
-                {article.debug ? " | DEBUG" : ""}
-                {article.imageUrls?.length
-                  ? ` | 图片: ${article.imageUrls.length}`
-                  : ""}
-                {componentTypes.length
-                  ? ` | 组件种类: ${componentTypes.length}（${componentTypes.join(
-                      ", "
-                    )}）`
-                  : ""}
-              </p>
-            )}
           </header>
 
-          {loading && <p className="text-gray-600">正在加载文档内容...</p>}
+          {loading && !article && (
+            <div className="space-y-4">
+              <div className="h-6 w-2/3 animate-pulse rounded bg-gray-200" />
+              <div className="h-4 w-full animate-pulse rounded bg-gray-100" />
+              <div className="h-4 w-11/12 animate-pulse rounded bg-gray-100" />
+              <div className="h-4 w-5/6 animate-pulse rounded bg-gray-100" />
+              <div className="h-40 w-full animate-pulse rounded-xl bg-gray-100" />
+            </div>
+          )}
           {error && <p className="text-red-600">{error}</p>}
 
-          {!loading && !error && article && (
+          {article && (
             <ArticleContent article={article} blocks={articleBlocks} />
+          )}
+
+          {article?.partial && !streamComplete && (
+            <div className="mt-6 flex items-center gap-3 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-blue-400 border-t-transparent" />
+              <div className="h-2 w-28 animate-pulse rounded bg-blue-200" />
+              <div className="h-2 w-20 animate-pulse rounded bg-blue-100" />
+            </div>
           )}
         </article>
       </div>

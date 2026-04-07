@@ -3,6 +3,7 @@ import {
   getDocumentBlocks,
   getDocumentContent,
   getDocumentMeta,
+  streamDocumentBlocks,
 } from "@/lib/feishu/client";
 
 const DEBUG_DOCS_URL =
@@ -11,7 +12,7 @@ const DEBUG_DOCUMENT_ID = "JCKEw8gDBiupjkko8ZCcOtYOnLd";
 const GLOBAL_DEBUG_ENABLED =
   process.env.ARTICLE_DEBUG === "1" ||
   process.env.ARTICLE_DEBUG?.toLowerCase() === "true";
-const ARTICLE_CACHE_TTL_MS = 30_000;
+const ARTICLE_CACHE_TTL_MS = 3 * 60_000;
 const articleCache = new Map<string, { expiresAt: number; data: unknown }>();
 
 function collectDocUrl(value: unknown): string | null {
@@ -82,7 +83,30 @@ type DocxElement = {
     };
     link?: { url?: string };
   };
+  mention_doc?: {
+    title?: string;
+    url?: string;
+  };
+  mention_user?: {
+    name?: string;
+    en_name?: string;
+    user_name?: string;
+    title?: string;
+    nickname?: string;
+  };
 };
+
+function getMentionUserName(mention: DocxElement["mention_user"]): string {
+  if (!mention) return "同事";
+  return (
+    mention.name?.trim() ||
+    mention.user_name?.trim() ||
+    mention.en_name?.trim() ||
+    mention.nickname?.trim() ||
+    mention.title?.trim() ||
+    "同事"
+  );
+}
 
 type DocxBlock = {
   block_id?: string;
@@ -109,6 +133,7 @@ type ArticleBlockPayload = {
   type: string;
   text?: string;
   level?: number;
+  rows?: string[][];
   imageUrl?: string;
   imageToken?: string;
   caption?: string;
@@ -120,6 +145,15 @@ function renderElementsToMarkdown(elements: DocxElement[] = []): string {
   return elements
     .map((el) => {
       const run = el.text_run;
+      if (el.mention_doc) {
+        const title = el.mention_doc.title ?? "文档";
+        const url = el.mention_doc.url;
+        return url ? `[${title}](${url})` : title;
+      }
+      if (el.mention_user) {
+        const name = getMentionUserName(el.mention_user);
+        return `@${name}`;
+      }
       if (!run?.content) return "";
 
       let text = run.content;
@@ -233,6 +267,220 @@ function extractTextFromBlockTree(
   return [own, childText].filter(Boolean).join("\n");
 }
 
+// ─── shared helpers ──────────────────────────────────────────────────────────
+
+function buildBlockById(items: DocxBlock[]): Map<string, DocxBlock> {
+  const map = new Map<string, DocxBlock>();
+  for (const b of items) {
+    if (b.block_id) map.set(b.block_id, b);
+  }
+  return map;
+}
+
+function normalizeBlocks(
+  rootBlocks: DocxBlock[],
+  blockById: Map<string, DocxBlock>
+): ArticleBlockPayload[] {
+  return rootBlocks.map((block) => {
+    const normalized = normalizeDocxBlock(block);
+    if (
+      (normalized.type === "callout" || normalized.type === "quote_container") &&
+      !normalized.text
+    ) {
+      normalized.text = extractTextFromBlockTree(block, blockById);
+    }
+    if (normalized.type === "grid") {
+      normalized.columns = (block.children ?? []).map((childId) =>
+        extractTextFromBlockTree(blockById.get(childId), blockById)
+      );
+    }
+    if (normalized.type === "children" && block.children?.length) {
+      const childBlocks = block.children
+        .map((childId) => blockById.get(childId))
+        .filter((item): item is DocxBlock => Boolean(item));
+      const looksLikeTable =
+        childBlocks.length > 0 &&
+        childBlocks.every((child) => child.block_type === 32);
+
+      if (looksLikeTable) {
+        const cells = childBlocks.map((child) =>
+          extractTextFromBlockTree(child, blockById).trim()
+        );
+        const total = cells.length;
+        let colCount = 2;
+        for (const c of [4, 3, 2]) {
+          if (total >= c && total % c === 0) {
+            colCount = c;
+            break;
+          }
+        }
+        const rows: string[][] = [];
+        for (let i = 0; i < cells.length; i += colCount) {
+          rows.push(cells.slice(i, i + colCount));
+        }
+        normalized.type = "table";
+        normalized.rows = rows;
+      } else {
+        normalized.text = extractTextFromBlockTree(block, blockById);
+      }
+    }
+    return normalized;
+  });
+}
+
+/** Resolve document ID from params, returns null + Response on error */
+async function resolveDocumentId(
+  debug: boolean,
+  appToken: string | null,
+  tableId: string | null,
+  recordId: string | null
+): Promise<
+  | { ok: true; documentId: string; docsUrl: string }
+  | { ok: false; response: Response }
+> {
+  if (debug) {
+    return { ok: true, documentId: DEBUG_DOCUMENT_ID, docsUrl: DEBUG_DOCS_URL };
+  }
+  const recordData = await getBaseRecord(appToken!, tableId!, recordId!);
+  const record = (recordData as { record?: { fields?: Record<string, unknown> } }).record;
+  const fields = record?.fields ?? {};
+  const docsUrl = collectDocUrl(fields) ?? "";
+  if (!docsUrl) {
+    return {
+      ok: false,
+      response: Response.json(
+        { ok: false, error: "No docs link found in record fields" },
+        { status: 404 }
+      ),
+    };
+  }
+  const documentId = extractDocumentId(docsUrl) ?? "";
+  if (!documentId) {
+    return {
+      ok: false,
+      response: Response.json(
+        { ok: false, error: "Invalid docs link format" },
+        { status: 400 }
+      ),
+    };
+  }
+  return { ok: true, documentId, docsUrl };
+}
+
+// ─── streaming handler ───────────────────────────────────────────────────────
+
+async function handleStreaming(
+  documentId: string,
+  docsUrl: string,
+  recordId: string,
+  debug: boolean
+): Promise<Response> {
+  const enc = new TextEncoder();
+  const cacheKey = `${documentId}|${recordId}`;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (obj: unknown) => {
+        try {
+          controller.enqueue(enc.encode(JSON.stringify(obj) + "\n"));
+        } catch {
+          // stream already closed
+        }
+      };
+
+      try {
+        // ── cache hit: single complete message ──
+        const cached = articleCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+          send({ type: "complete", data: cached.data });
+          controller.close();
+          return;
+        }
+
+        // ── start meta fetch in parallel ──
+        const metaPromise = getDocumentMeta(documentId);
+        let partialSent = false;
+
+        const result = await streamDocumentBlocks(
+          documentId,
+          async (rootLevelItems, _allSoFar) => {
+            if (!partialSent) {
+              partialSent = true;
+              const rootBlocks = rootLevelItems as DocxBlock[];
+              // Only root items available → grid/callout columns will be empty strings
+              const emptyBlockById = buildBlockById(rootBlocks);
+              const partialBlocks = normalizeBlocks(rootBlocks, emptyBlockById);
+              const metaData = await metaPromise;
+              send({
+                type: "partial",
+                recordId,
+                docsUrl,
+                documentId,
+                docTitle: metaData.document?.title ?? "",
+                debug,
+                content: "",
+                imageUrls: [],
+                blocks: partialBlocks,
+                partial: true,
+              });
+            }
+          }
+        );
+
+        // ── complete: full normalized data ──
+        const metaData = await metaPromise;
+        const allBlocks = result.items as DocxBlock[];
+        const rootBlocks = result.rootItems as DocxBlock[];
+        const blockById = buildBlockById(allBlocks);
+
+        const blockLines = rootBlocks
+          .map(blockToMarkdownLine)
+          .filter((line): line is string => Boolean(line));
+        let content = blockLines.join("\n\n");
+        if (!content.trim()) {
+          const docData = await getDocumentContent(documentId);
+          content =
+            (docData as { content?: string }).content ??
+            JSON.stringify(docData, null, 2);
+        }
+        const imageUrls = extractImageUrls(content);
+        const blocks = normalizeBlocks(rootBlocks, blockById);
+
+        const data = {
+          recordId,
+          docsUrl,
+          documentId,
+          docTitle: metaData.document?.title ?? "",
+          debug,
+          content,
+          imageUrls,
+          blocks,
+        };
+        articleCache.set(cacheKey, {
+          expiresAt: Date.now() + ARTICLE_CACHE_TTL_MS,
+          data,
+        });
+
+        send({ type: "complete", data });
+      } catch (err) {
+        send({ type: "error", error: String(err) });
+      }
+
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+// ─── main handler ─────────────────────────────────────────────────────────────
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -240,6 +488,7 @@ export async function GET(request: Request) {
     const appToken = searchParams.get("appToken");
     const tableId = searchParams.get("tableId");
     const recordId = searchParams.get("recordId");
+    const streaming = searchParams.get("stream") === "1";
 
     if (!debug && (!appToken || !tableId || !recordId)) {
       return Response.json(
@@ -248,78 +497,46 @@ export async function GET(request: Request) {
       );
     }
 
-    let docsUrl = DEBUG_DOCS_URL;
-    let documentId = DEBUG_DOCUMENT_ID;
+    const resolved = await resolveDocumentId(debug, appToken, tableId, recordId);
+    if (!resolved.ok) return resolved.response;
+    const { documentId, docsUrl } = resolved;
+    const effectiveRecordId = recordId ?? "debug";
 
-    if (!debug) {
-      const recordData = await getBaseRecord(appToken!, tableId!, recordId!);
-      const record = (recordData as {
-        record?: { fields?: Record<string, unknown> };
-      }).record;
-      const fields = record?.fields ?? {};
-      docsUrl = collectDocUrl(fields) ?? "";
-
-      if (!docsUrl) {
-        return Response.json(
-          { ok: false, error: "No docs link found in record fields" },
-          { status: 404 }
-        );
-      }
-
-      documentId = extractDocumentId(docsUrl) ?? "";
-      if (!documentId) {
-        return Response.json(
-          { ok: false, error: "Invalid docs link format" },
-          { status: 400 }
-        );
-      }
+    // ── streaming mode ──
+    if (streaming) {
+      return handleStreaming(documentId, docsUrl, effectiveRecordId, debug);
     }
 
-    const cacheKey = `${documentId}|${recordId ?? "debug"}`;
+    // ── regular JSON mode (legacy / cache fast path) ──
+    const cacheKey = `${documentId}|${effectiveRecordId}`;
     const cached = articleCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       return Response.json({ ok: true, data: cached.data });
     }
 
-    const blocksData = await getDocumentBlocks(documentId);
-    const metaData = await getDocumentMeta(documentId);
+    const [blocksData, metaData] = await Promise.all([
+      getDocumentBlocks(documentId),
+      getDocumentMeta(documentId),
+    ]);
     const allBlocks = blocksData.items as DocxBlock[];
     const rootBlocks = (blocksData.rootItems as DocxBlock[]) || allBlocks;
-    const blockById = new Map<string, DocxBlock>();
-    for (const b of allBlocks) {
-      if (b.block_id) blockById.set(b.block_id, b);
-    }
+    const blockById = buildBlockById(allBlocks);
 
     const blockLines = rootBlocks
       .map(blockToMarkdownLine)
       .filter((line): line is string => Boolean(line));
     let content = blockLines.join("\n\n");
     if (!content.trim()) {
-      // Fallback only when block API returns no visible text.
       const docData = await getDocumentContent(documentId);
       content =
         (docData as { content?: string }).content ??
         JSON.stringify(docData, null, 2);
     }
     const imageUrls = extractImageUrls(content);
-    const blocks = rootBlocks.map((block) => {
-      const normalized = normalizeDocxBlock(block);
-      if (normalized.type === "callout" && !normalized.text) {
-        normalized.text = extractTextFromBlockTree(block, blockById);
-      }
-      if (normalized.type === "quote_container" && !normalized.text) {
-        normalized.text = extractTextFromBlockTree(block, blockById);
-      }
-      if (normalized.type === "grid") {
-        normalized.columns = (block.children ?? []).map((childId) =>
-          extractTextFromBlockTree(blockById.get(childId), blockById)
-        );
-      }
-      return normalized;
-    });
+    const blocks = normalizeBlocks(rootBlocks, blockById);
 
     const data = {
-      recordId: recordId ?? "debug",
+      recordId: effectiveRecordId,
       docsUrl,
       documentId,
       docTitle: metaData.document?.title ?? "",
