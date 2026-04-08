@@ -9,10 +9,12 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import styles from "./article.module.css";
 
 const PRESET_DOCUMENT_ID = "JCKEw8gDBiupjkko8ZCcOtYOnLd";
+const APP_TOKEN = "B4K3bAYKTau24es6Dxdcq3FEnig";
+const TABLE_ID = "tblHalmUkZ8AZSgp";
 
 type ContentSegment =
   | { type: "text"; value: string }
@@ -65,10 +67,6 @@ function buildRowSpanTable(rows: string[][]): MergedCell[][] {
     r.map((text) => ({ text }))
   );
 
-  // Heuristic: empty cell under a non-empty cell in same column is treated as merged continuation.
-  // To avoid over-merging genuinely empty columns, require current row to have visible content elsewhere.
-  // Vertical merge is only applied to first column to avoid over-merging
-  // data columns in complex comparison tables.
   for (let c = 0; c < Math.min(colCount, 1); c++) {
     let anchorRow = -1;
     for (let r = 0; r < normalized.length; r++) {
@@ -87,8 +85,6 @@ function buildRowSpanTable(rows: string[][]): MergedCell[][] {
     }
   }
 
-  // Horizontal merge (colSpan): merge consecutive empty cells to the left anchor.
-  // Only merge when current row has at least one visible cell to avoid collapsing fully empty rows.
   for (let r = 0; r < normalized.length; r++) {
     const rowHasAnyContent = normalized[r].some(Boolean);
     if (!rowHasAnyContent) continue;
@@ -96,7 +92,7 @@ function buildRowSpanTable(rows: string[][]): MergedCell[][] {
     let anchorCol = -1;
     for (let c = 0; c < colCount; c++) {
       const cell = result[r][c];
-      if (cell.rowSpan === 0) continue; // already consumed by vertical merge
+      if (cell.rowSpan === 0) continue;
 
       if (cell.text) {
         anchorCol = c;
@@ -716,7 +712,6 @@ function ArticleContent({
               }
               if (block.type === "grid") {
                 const columns = block.columns ?? [];
-                // In partial state, columns may be ["","",""] — all empty strings
                 const hasColumnContent = columns.some((c) => c.trim().length > 0);
                 if (!hasColumnContent && isPartial) {
                   const colCount =
@@ -812,14 +807,44 @@ function ArticleContent({
   );
 }
 
+function collectDocUrl(value: unknown): string | null {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    const match = value.match(/https?:\/\/[^\s]+/);
+    const url = match?.[0] ?? value;
+    if (url.includes("/docx/")) return url;
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = collectDocUrl(item);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  if (typeof value === "object") {
+    for (const val of Object.values(value as Record<string, unknown>)) {
+      const hit = collectDocUrl(val);
+      if (hit) return hit;
+    }
+  }
+
+  return null;
+}
+
+function extractDocumentId(url: string): string | null {
+  const match = url.match(/\/docx\/([A-Za-z0-9]+)/);
+  return match?.[1] ?? null;
+}
+
 export default function ArticlePage() {
   const [mounted, setMounted] = useState(false);
   const bgShader = "none";
-  const searchParams = useSearchParams();
-  const appToken = searchParams.get("appToken") ?? "";
-  const tableId = searchParams.get("tableId") ?? "";
-  const recordId = searchParams.get("recordId") ?? "";
-  const debug = searchParams.get("debug") === "1";
+  const params = useParams();
+  const slug = params.slug as string;
 
   const [loading, setLoading] = useState(false);
   const [streamComplete, setStreamComplete] = useState(false);
@@ -846,21 +871,6 @@ export default function ArticlePage() {
     return fromBlocks?.trim() || "";
   }, [article]);
 
-  const requestUrl = useMemo(() => {
-    const params = new URLSearchParams();
-    if (debug) {
-      params.set("debug", "1");
-      return `/api/article?${params.toString()}`;
-    }
-    if (appToken && tableId && recordId) {
-      params.set("appToken", appToken);
-      params.set("tableId", tableId);
-      params.set("recordId", recordId);
-    }
-    const query = params.toString();
-    return query ? `/api/article?${query}` : "/api/article";
-  }, [appToken, tableId, recordId, debug]);
-
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -868,22 +878,33 @@ export default function ArticlePage() {
   useEffect(() => {
     let cancelled = false;
 
-    const streamArticle = async () => {
+    const loadArticle = async () => {
       setLoading(true);
       setStreamComplete(false);
       setError(null);
       setArticle(null);
 
-      const streamUrl =
-        requestUrl + (requestUrl.includes("?") ? "&" : "?") + "stream=1";
-
       try {
-        const res = await fetch(streamUrl);
-        if (!res.ok || !res.body) {
-          throw new Error(`HTTP ${res.status}`);
+        const playbookRes = await fetch(`/api/playbook?slug=${encodeURIComponent(slug)}`);
+        const playbookResult = await playbookRes.json();
+
+        if (!playbookResult.ok) {
+          throw new Error(playbookResult.error || "Record not found");
         }
 
-        const reader = res.body.getReader();
+        const record = playbookResult.data;
+        const docsUrl = collectDocUrl(record.fields) ?? "";
+        const documentId = extractDocumentId(docsUrl) ?? "";
+
+        const articleRes = await fetch(
+          `/api/article?appToken=${APP_TOKEN}&tableId=${TABLE_ID}&recordId=${record.record_id}&stream=1`
+        );
+
+        if (!articleRes.ok || !articleRes.body) {
+          throw new Error(`HTTP ${articleRes.status}`);
+        }
+
+        const reader = articleRes.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
 
@@ -901,7 +922,6 @@ export default function ArticlePage() {
               type: string;
               data?: ArticleApiData;
               error?: string;
-              // partial message fields
               recordId?: string;
               docsUrl?: string;
               documentId?: string;
@@ -916,9 +936,9 @@ export default function ArticlePage() {
 
             if (msg.type === "partial") {
               setArticle({
-                recordId: msg.recordId ?? "",
-                docsUrl: msg.docsUrl ?? "",
-                documentId: msg.documentId ?? "",
+                recordId: msg.recordId ?? record.record_id,
+                docsUrl: msg.docsUrl ?? docsUrl,
+                documentId: msg.documentId ?? documentId,
                 docTitle: msg.docTitle,
                 debug: msg.debug,
                 content: msg.content ?? "",
@@ -945,11 +965,11 @@ export default function ArticlePage() {
       }
     };
 
-    streamArticle();
+    loadArticle();
     return () => {
       cancelled = true;
     };
-  }, [requestUrl]);
+  }, [slug]);
 
   if (!mounted) {
     return (
@@ -997,7 +1017,7 @@ export default function ArticlePage() {
         <article className="rounded-2xl border border-white/80 bg-white/92 p-5 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] backdrop-blur-sm sm:p-6 lg:p-8">
           <div className="mx-auto mb-10 flex max-w-[940px] items-center justify-between">
             <Link
-              href="/feishu-table"
+              href="/lark_growth_design_playbook"
               className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
             >
               <svg
