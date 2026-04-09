@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
 export default function Home() {
-  redirect("/feishu-table");
+  redirect("/lark_growth_design_playbook");
 }
