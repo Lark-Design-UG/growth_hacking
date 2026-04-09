@@ -13,6 +13,7 @@ const GLOBAL_DEBUG_ENABLED =
   process.env.ARTICLE_DEBUG === "1" ||
   process.env.ARTICLE_DEBUG?.toLowerCase() === "true";
 const ARTICLE_CACHE_TTL_MS = 3 * 60_000;
+const ARTICLE_CACHE_SCHEMA_VERSION = "v4";
 const articleCache = new Map<string, { expiresAt: number; data: unknown }>();
 
 function collectDocUrl(value: unknown): string | null {
@@ -71,6 +72,50 @@ function extractImageUrls(content: string): string[] {
   }
 
   return Array.from(urls);
+}
+
+function collectTagsFromValue(value: unknown): string[] {
+  if (value == null) return [];
+  if (typeof value === "string") {
+    return value
+      .split(/[,\uFF0C\u3001|/\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectTagsFromValue(item));
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const direct = [obj.name, obj.text, obj.label, obj.value]
+      .flatMap((item) => collectTagsFromValue(item))
+      .filter(Boolean);
+    if (direct.length) return direct;
+    return Object.values(obj).flatMap((item) => collectTagsFromValue(item));
+  }
+  return [];
+}
+
+function stripEmoji(text: string): string {
+  return text
+    .replace(/[\p{Extended_Pictographic}\uFE0F]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function collectTagsFromFields(fields: Record<string, unknown>): string[] {
+  // 仅读取指定的两个筛选字段
+  const raw = [fields.Category, fields.Region].flatMap((value) =>
+    collectTagsFromValue(value)
+  );
+
+  return Array.from(
+    new Set(
+      raw
+        .map((item) => stripEmoji(item))
+        .filter((item) => item.length >= 1 && item.length <= 24)
+    )
+  ).slice(0, 12);
 }
 
 type DocxElement = {
@@ -281,12 +326,17 @@ function normalizeBlocks(
   rootBlocks: DocxBlock[],
   blockById: Map<string, DocxBlock>
 ): ArticleBlockPayload[] {
+  const textLikeTypes = new Set([
+    "text",
+    "bullet",
+    "ordered",
+    "callout",
+    "quote_container",
+  ]);
+
   return rootBlocks.map((block) => {
     const normalized = normalizeDocxBlock(block);
-    if (
-      (normalized.type === "callout" || normalized.type === "quote_container") &&
-      !normalized.text
-    ) {
+    if (textLikeTypes.has(normalized.type)) {
       normalized.text = extractTextFromBlockTree(block, blockById);
     }
     if (normalized.type === "grid") {
@@ -335,16 +385,22 @@ async function resolveDocumentId(
   tableId: string | null,
   recordId: string | null
 ): Promise<
-  | { ok: true; documentId: string; docsUrl: string }
+  | { ok: true; documentId: string; docsUrl: string; tags: string[] }
   | { ok: false; response: Response }
 > {
   if (debug) {
-    return { ok: true, documentId: DEBUG_DOCUMENT_ID, docsUrl: DEBUG_DOCS_URL };
+    return {
+      ok: true,
+      documentId: DEBUG_DOCUMENT_ID,
+      docsUrl: DEBUG_DOCS_URL,
+      tags: [],
+    };
   }
   const recordData = await getBaseRecord(appToken!, tableId!, recordId!);
   const record = (recordData as { record?: { fields?: Record<string, unknown> } }).record;
   const fields = record?.fields ?? {};
   const docsUrl = collectDocUrl(fields) ?? "";
+  const tags = collectTagsFromFields(fields);
   if (!docsUrl) {
     return {
       ok: false,
@@ -364,7 +420,7 @@ async function resolveDocumentId(
       ),
     };
   }
-  return { ok: true, documentId, docsUrl };
+  return { ok: true, documentId, docsUrl, tags };
 }
 
 // ─── streaming handler ───────────────────────────────────────────────────────
@@ -373,10 +429,11 @@ async function handleStreaming(
   documentId: string,
   docsUrl: string,
   recordId: string,
+  tags: string[],
   debug: boolean
 ): Promise<Response> {
   const enc = new TextEncoder();
-  const cacheKey = `${documentId}|${recordId}`;
+  const cacheKey = `${ARTICLE_CACHE_SCHEMA_VERSION}|${documentId}|${recordId}`;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -416,6 +473,7 @@ async function handleStreaming(
                 recordId,
                 docsUrl,
                 documentId,
+                tags,
                 docTitle: metaData.document?.title ?? "",
                 debug,
                 content: "",
@@ -450,6 +508,7 @@ async function handleStreaming(
           recordId,
           docsUrl,
           documentId,
+          tags,
           docTitle: metaData.document?.title ?? "",
           debug,
           content,
@@ -499,16 +558,16 @@ export async function GET(request: Request) {
 
     const resolved = await resolveDocumentId(debug, appToken, tableId, recordId);
     if (!resolved.ok) return resolved.response;
-    const { documentId, docsUrl } = resolved;
+    const { documentId, docsUrl, tags } = resolved;
     const effectiveRecordId = recordId ?? "debug";
 
     // ── streaming mode ──
     if (streaming) {
-      return handleStreaming(documentId, docsUrl, effectiveRecordId, debug);
+      return handleStreaming(documentId, docsUrl, effectiveRecordId, tags, debug);
     }
 
     // ── regular JSON mode (legacy / cache fast path) ──
-    const cacheKey = `${documentId}|${effectiveRecordId}`;
+    const cacheKey = `${ARTICLE_CACHE_SCHEMA_VERSION}|${documentId}|${effectiveRecordId}`;
     const cached = articleCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       return Response.json({ ok: true, data: cached.data });
@@ -539,6 +598,7 @@ export async function GET(request: Request) {
       recordId: effectiveRecordId,
       docsUrl,
       documentId,
+      tags,
       docTitle: metaData.document?.title ?? "",
       debug,
       content,

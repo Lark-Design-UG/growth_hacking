@@ -3,6 +3,7 @@
 import {
   Fragment,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -34,6 +35,7 @@ type ArticleApiData = {
   recordId: string;
   docsUrl: string;
   documentId: string;
+  tags?: string[];
   docTitle?: string;
   debug?: boolean;
   content: string;
@@ -55,6 +57,29 @@ type ArticleApiData = {
 
 type RenderCtx = { blockIndex: number };
 type MergedCell = { text: string; rowSpan?: number; colSpan?: number };
+type TocItem = { id: string; text: string; level: number };
+
+function normalizeHeadingText(text: string): string {
+  return text
+    .replace(/\[([^\]]+)]\((https?:\/\/[^)\s]+)\)/g, "$1")
+    .replace(/[*_`#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function slugifyHeading(text: string): string {
+  const normalized = normalizeHeadingText(text)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized || "section";
+}
+
+function buildHeadingId(text: string, index: number): string {
+  return `section-${index}-${slugifyHeading(text)}`;
+}
 
 function buildRowSpanTable(rows: string[][]): MergedCell[][] {
   if (!rows.length) return [];
@@ -374,6 +399,54 @@ function parseArticleBlocks(content: string): ArticleBlock[] {
   return blocks;
 }
 
+function ImageLightbox({
+  src,
+  alt,
+  onClose,
+}: {
+  src: string;
+  alt: string;
+  onClose: () => void;
+}) {
+  const handleKey = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    },
+    [onClose]
+  );
+
+  useEffect(() => {
+    document.addEventListener("keydown", handleKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = "";
+    };
+  }, [handleKey]);
+
+  return (
+    <div className={styles.lightboxOverlay} onClick={onClose}>
+      <button
+        type="button"
+        className={styles.lightboxClose}
+        onClick={onClose}
+        aria-label="关闭大图"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+          <path d="M18 6L6 18" />
+          <path d="M6 6l12 12" />
+        </svg>
+      </button>
+      <img
+        src={src}
+        alt={alt}
+        className={styles.lightboxImage}
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
+  );
+}
+
 function LazyImage({
   src,
   alt,
@@ -385,6 +458,7 @@ function LazyImage({
 }) {
   const [isVisible, setIsVisible] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [lightbox, setLightbox] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -423,9 +497,101 @@ function LazyImage({
           loading="lazy"
           referrerPolicy="no-referrer"
           onLoad={() => setIsLoaded(true)}
+          onClick={() => isLoaded && setLightbox(true)}
+          style={{ cursor: isLoaded ? "zoom-in" : undefined }}
         />
       ) : null}
+      {lightbox && src && (
+        <ImageLightbox
+          src={src}
+          alt={alt}
+          onClose={() => setLightbox(false)}
+        />
+      )}
     </div>
+  );
+}
+
+function ShaderCover({ className }: { className?: string }) {
+  const art = useMemo(() => {
+    const seed = Math.floor(Math.random() * 2147483647) || 1;
+    const rand = (() => {
+      let state = seed;
+      return () => {
+        state |= 0;
+        state = (state + 0x6d2b79f5) | 0;
+        let t = Math.imul(state ^ (state >>> 15), 1 | state);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    })();
+
+    const cols = 32;
+    const rows = 18;
+    const width = 1000;
+    const height = 320;
+    const stepX = width / (cols - 1);
+    const stepY = height / (rows - 1);
+    const phaseA = rand() * Math.PI * 2;
+    const phaseB = rand() * Math.PI * 2;
+    const freqA = 0.85 + rand() * 0.6;
+    const freqB = 1.1 + rand() * 0.8;
+
+    const dots = Array.from({ length: rows * cols }, (_, idx) => {
+      const row = Math.floor(idx / cols);
+      const col = idx % cols;
+      const x = col * stepX;
+      const y = row * stepY;
+      const nx = col / (cols - 1);
+      const ny = row / (rows - 1);
+
+      const wave =
+        0.5 +
+        0.5 *
+          Math.sin(nx * Math.PI * 2 * freqA + phaseA + ny * 1.35) *
+          Math.cos(ny * Math.PI * 2 * freqB + phaseB - nx * 1.2);
+      const verticalBias = Math.pow(ny, 1.65);
+      const signal = 0.22 * wave + 0.78 * verticalBias;
+      const jitter = (rand() - 0.5) * 0.22;
+      const radius = 0.55 + signal * 2.1 + jitter;
+      const opacity = 0.06 + signal * 0.24;
+      const visible = ny > 0.2 || rand() > 0.8;
+
+      return {
+        x: Math.round(x * 10) / 10,
+        y: Math.round(y * 10) / 10,
+        r: Math.max(0.45, radius),
+        opacity,
+        visible,
+      };
+    });
+
+    return { dots };
+  }, []);
+
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 1000 320"
+      preserveAspectRatio="xMidYMid slice"
+      aria-hidden="true"
+    >
+      <defs>
+      </defs>
+      <rect width="1000" height="320" fill="#F6F8FC" />
+      {art.dots.map((dot, idx) =>
+        dot.visible ? (
+          <circle
+            key={`dot-${idx}`}
+            cx={dot.x}
+            cy={dot.y}
+            r={dot.r}
+            fill="#4F6FAE"
+            opacity={dot.opacity}
+          />
+        ) : null
+      )}
+    </svg>
   );
 }
 
@@ -435,12 +601,47 @@ function getHeadingClass(level: number): string {
   return styles.heading3;
 }
 
+function parseListText(
+  text: string
+): { kind: "ul" | "ol"; items: string[] } | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return null;
+
+  const bulletRegex = /^[-*+•]\s+/;
+  const orderedRegex = /^\d+[.)、]\s+/;
+
+  if (lines.every((line) => bulletRegex.test(line))) {
+    return {
+      kind: "ul",
+      items: lines.map((line) => line.replace(bulletRegex, "")),
+    };
+  }
+
+  if (lines.every((line) => orderedRegex.test(line))) {
+    return {
+      kind: "ol",
+      items: lines.map((line) => line.replace(orderedRegex, "")),
+    };
+  }
+
+  return null;
+}
+
 function renderBlock(block: ArticleBlock, ctx: RenderCtx): ReactNode {
   const { blockIndex } = ctx;
   switch (block.type) {
     case "heading":
+      const headingId = buildHeadingId(block.text, blockIndex);
       return (
-        <h2 key={`heading-${blockIndex}`} className={getHeadingClass(block.level)}>
+        <h2
+          key={`heading-${blockIndex}`}
+          id={headingId}
+          className={getHeadingClass(block.level)}
+        >
           {renderInline(block.text, `heading-${blockIndex}`)}
         </h2>
       );
@@ -588,15 +789,43 @@ function ArticleContent({
                     ? styles.heading5
                     : styles.heading6;
                 return (
-                  <h2 key={block.id} className={cls}>
+                  <h2
+                    key={block.id}
+                    id={buildHeadingId(block.text ?? "", index)}
+                    className={cls}
+                  >
                     {renderInline(block.text ?? "", `block-heading-${index}`)}
                   </h2>
                 );
               }
               if (block.type === "text") {
+                const text = block.text ?? "";
+                const listLike = parseListText(text);
+                if (listLike?.kind === "ul") {
+                  return (
+                    <ul key={block.id} className={styles.bulletBlock}>
+                      {listLike.items.map((item, itemIndex) => (
+                        <li key={`${block.id}-text-ul-${itemIndex}`} className={styles.li}>
+                          {renderInline(item, `block-text-ul-${index}-${itemIndex}`)}
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                }
+                if (listLike?.kind === "ol") {
+                  return (
+                    <ol key={block.id} className={styles.orderedBlock}>
+                      {listLike.items.map((item, itemIndex) => (
+                        <li key={`${block.id}-text-ol-${itemIndex}`} className={styles.li}>
+                          {renderInline(item, `block-text-ol-${index}-${itemIndex}`)}
+                        </li>
+                      ))}
+                    </ol>
+                  );
+                }
                 return (
                   <p key={block.id} className={styles.textBlock}>
-                    {renderInline(block.text ?? "", `block-text-${index}`)}
+                    {renderInline(text, `block-text-${index}`)}
                   </p>
                 );
               }
@@ -854,13 +1083,6 @@ export default function ArticlePage() {
     () => (article ? parseArticleBlocks(article.content) : []),
     [article]
   );
-  const componentTypes = useMemo(
-    () =>
-      article?.blocks?.length
-        ? Array.from(new Set(article.blocks.map((block) => block.type)))
-        : Array.from(new Set(articleBlocks.map((block) => block.type))),
-    [article, articleBlocks]
-  );
   const articleTitle = useMemo(() => {
     if (article?.docTitle?.trim()) {
       return article.docTitle.trim();
@@ -870,10 +1092,93 @@ export default function ArticlePage() {
     )?.text;
     return fromBlocks?.trim() || "";
   }, [article]);
+  const tocItems = useMemo((): TocItem[] => {
+    const items: TocItem[] = [];
+    if (article?.blocks?.length) {
+      article.blocks.forEach((block, index) => {
+        if (!block.type.startsWith("heading")) return;
+        const raw = block.text ?? "";
+        const text = normalizeHeadingText(raw);
+        if (!text) return;
+        const level =
+          block.level ?? (Number(block.type.replace("heading", "")) || 3);
+        items.push({
+          id: buildHeadingId(raw, index),
+          text,
+          level: Math.min(Math.max(level, 1), 6),
+        });
+      });
+      return items;
+    }
+
+    articleBlocks.forEach((block, index) => {
+      if (block.type !== "heading") return;
+      const text = normalizeHeadingText(block.text);
+      if (!text) return;
+      items.push({
+        id: buildHeadingId(block.text, index),
+        text,
+        level: Math.min(Math.max(block.level, 1), 6),
+      });
+    });
+    return items;
+  }, [article, articleBlocks]);
+  const coverTags = useMemo(
+    () =>
+      Array.from(
+        new Set((article?.tags ?? []).map((item) => item.trim()).filter(Boolean))
+      ).slice(0, 6),
+    [article?.tags]
+  );
+  const [activeTocId, setActiveTocId] = useState<string>("");
+  const [titleStuck, setTitleStuck] = useState(false);
+  const titleSentinelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (!titleSentinelRef.current) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setTitleStuck(!entry.isIntersecting);
+      },
+      { threshold: 0, rootMargin: "-60px 0px 0px 0px" }
+    );
+    observer.observe(titleSentinelRef.current);
+    return () => observer.disconnect();
+  }, [mounted]);
+
+  useEffect(() => {
+    setActiveTocId(tocItems[0]?.id ?? "");
+    if (!tocItems.length) return;
+    const headings = tocItems
+      .map((item) => document.getElementById(item.id))
+      .filter((el): el is HTMLElement => Boolean(el));
+    if (!headings.length) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort(
+            (a, b) =>
+              Math.abs(a.boundingClientRect.top) - Math.abs(b.boundingClientRect.top)
+          );
+        if (visible[0]?.target?.id) {
+          setActiveTocId(visible[0].target.id);
+        }
+      },
+      {
+        rootMargin: "-140px 0px -65% 0px",
+        threshold: [0, 0.1, 0.3, 0.6, 1],
+      }
+    );
+
+    headings.forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, [tocItems]);
 
   useEffect(() => {
     let cancelled = false;
@@ -973,25 +1278,25 @@ export default function ArticlePage() {
 
   if (!mounted) {
     return (
-      <div className="relative min-h-screen pb-10 pt-[72px]">
+      <div className="relative min-h-screen bg-white pb-16">
         <div
           className="pointer-events-none fixed inset-0 -z-10"
           style={{
             backgroundImage: bgShader,
-            backgroundColor: "#f3f4f6",
+            backgroundColor: "#ffffff",
             backgroundRepeat: "no-repeat",
             backgroundSize: "cover",
             backgroundPosition: "center center",
           }}
         />
-        <div className="relative mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10">
-          <article className="rounded-2xl border border-white/80 bg-white/92 p-5 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] backdrop-blur-sm sm:p-6 lg:p-8">
-            <div className="mx-auto mb-10 flex max-w-[940px] items-center justify-between">
+        <div className="relative w-full px-5 sm:px-8 lg:px-10">
+          <article>
+            <div className="mx-auto mb-10 flex max-w-[760px] items-center justify-between">
               <span className="inline-block h-10 w-10 animate-pulse rounded-full bg-gray-100" />
               <span className="inline-block h-8 w-8 animate-pulse rounded-md bg-gray-100" />
             </div>
-            <header className="mx-auto mb-4 max-w-[940px] border-b border-gray-100 pb-4">
-              <h1 className="mt-8 text-3xl font-bold text-gray-900 sm:text-4xl">
+            <header className="mx-auto mb-6 max-w-[760px] border-b border-gray-200 pb-5">
+              <h1 className="mt-8 text-4xl font-semibold tracking-tight text-gray-900 sm:text-5xl">
                 <span className="block h-10 w-2/3 animate-pulse rounded bg-gray-200" />
               </h1>
             </header>
@@ -1002,23 +1307,29 @@ export default function ArticlePage() {
   }
 
   return (
-    <div className="relative min-h-screen pb-10 pt-[72px]">
+    <div className="relative min-h-screen bg-white pb-16">
       <div
         className="pointer-events-none fixed inset-0 -z-10"
         style={{
           backgroundImage: bgShader,
-          backgroundColor: "#f3f4f6",
+          backgroundColor: "#ffffff",
           backgroundRepeat: "no-repeat",
           backgroundSize: "cover",
           backgroundPosition: "center center",
         }}
       />
-      <div className="relative mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-10">
-        <article className="rounded-2xl border border-white/80 bg-white/92 p-5 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.45)] backdrop-blur-sm sm:p-6 lg:p-8">
-          <div className="mx-auto mb-10 flex max-w-[940px] items-center justify-between">
+      <div className="relative w-full px-5 sm:px-8 lg:px-10">
+        <div
+          className={`fixed inset-x-0 top-0 z-[70] border-b bg-white transition-[opacity,transform] duration-200 ${
+            titleStuck
+              ? "translate-y-0 opacity-100 border-gray-200 shadow-[0_1px_0_0_rgba(0,0,0,0.06)]"
+              : "pointer-events-none -translate-y-full opacity-0 border-transparent"
+          }`}
+        >
+          <div className="mx-auto flex w-full max-w-[1120px] items-center gap-3 py-3">
             <Link
               href="/lark_growth_design_playbook"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
             >
               <svg
                 aria-hidden="true"
@@ -1028,12 +1339,17 @@ export default function ArticlePage() {
                 strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                className="h-5 w-5"
+                className="h-4 w-4"
               >
                 <path d="M19 12H5" />
                 <path d="M12 19l-7-7 7-7" />
               </svg>
             </Link>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-gray-900">
+                {articleTitle}
+              </p>
+            </div>
             {article?.docsUrl ? (
               <a
                 href={article.docsUrl}
@@ -1041,7 +1357,7 @@ export default function ArticlePage() {
                 rel="noreferrer"
                 aria-label="打开原始飞书文档"
                 title="打开原始飞书文档"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 text-gray-500 transition hover:bg-gray-50 hover:text-blue-600"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-200 text-gray-500 transition hover:bg-gray-50 hover:text-blue-600"
               >
                 <svg
                   viewBox="0 0 24 24"
@@ -1059,18 +1375,122 @@ export default function ArticlePage() {
                 </svg>
               </a>
             ) : (
-              <span className="inline-block h-8 w-8 animate-pulse rounded-md bg-gray-100" />
+              <span className="inline-block h-8 w-8 shrink-0 animate-pulse rounded-md bg-gray-100" />
             )}
           </div>
-          <header className="mx-auto mb-4 max-w-[940px] border-b border-gray-100 pb-4">
-            <h1 className="mt-8 text-3xl font-bold text-gray-900 sm:text-4xl">
-              {!article ? (
-                <span className="block h-10 w-2/3 animate-pulse rounded bg-gray-200" />
+        </div>
+
+        <div className="-mx-5 mb-6 overflow-hidden border-b border-gray-100 sm:-mx-8 lg:-mx-10">
+          <div className="absolute inset-x-0 top-0 z-10">
+            <div className="mx-auto flex w-full max-w-[1120px] items-center justify-between py-4">
+              <Link
+                href="/lark_growth_design_playbook"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/70 bg-white/90 text-gray-700 shadow-sm backdrop-blur transition hover:bg-white"
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                >
+                  <path d="M19 12H5" />
+                  <path d="M12 19l-7-7 7-7" />
+                </svg>
+              </Link>
+              {article?.docsUrl ? (
+                <a
+                  href={article.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="打开原始飞书文档"
+                  title="打开原始飞书文档"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/70 bg-white/90 text-gray-700 shadow-sm backdrop-blur transition hover:bg-white"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-4 w-4"
+                  >
+                    <path d="M14 3h7v7" />
+                    <path d="M10 14L21 3" />
+                    <path d="M21 14v7h-7" />
+                    <path d="M3 10v11h11" />
+                  </svg>
+                </a>
               ) : (
-                articleTitle
+                <span className="inline-block h-8 w-8 animate-pulse rounded-md bg-white/70" />
               )}
-            </h1>
-          </header>
+            </div>
+          </div>
+          <div className="relative z-[5] flex items-center justify-center">
+            <ShaderCover className="absolute inset-0 h-full w-full" />
+            <div ref={titleSentinelRef} className="relative z-10 mx-auto max-w-[860px] px-5 py-20 text-center sm:px-8 sm:py-28 lg:py-45">
+
+              <h1 className="text-3xl font-bold tracking-tight text-gray-800 sm:text-4xl lg:text-[3rem] lg:leading-[1.15]">
+                {!article ? (
+                  <span className="mx-auto block h-10 w-2/3 animate-pulse rounded bg-gray-800/15" />
+                ) : (
+                  articleTitle
+                )}
+              </h1>
+              {article && coverTags.length > 0 ? (
+                <div className="mt-4 text-center text-sm text-gray-700/85">
+                  {coverTags.join(" · ")}
+                </div>
+              ) : !article ? (
+                <div className="mt-4 flex items-center justify-center gap-2">
+                  <span className="h-6 w-16 animate-pulse rounded-full bg-white/60" />
+                  <span className="h-6 w-14 animate-pulse rounded-full bg-white/60" />
+                  <span className="h-6 w-20 animate-pulse rounded-full bg-white/60" />
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-24 lg:grid lg:grid-cols-[240px_minmax(0,860px)] lg:justify-center lg:gap-10">
+          <aside className="hidden lg:row-span-2 lg:row-start-1 lg:block">
+            <nav className="sticky top-[110px] max-h-[calc(100vh-130px)] overflow-auto pr-4">
+              {/* <p className="mb-3 text-xs font-semibold uppercase tracking-[0.08em] text-gray-500">
+                目录
+              </p> */}
+              <ul className="space-y-1">
+                {tocItems.map((item) => (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const el = document.getElementById(item.id);
+                        if (!el) return;
+                        const top =
+                          el.getBoundingClientRect().top + window.scrollY - 152;
+                        window.scrollTo({ top, behavior: "smooth" });
+                      }}
+                      className={`w-full truncate border-l py-1.5 pl-3 pr-2 text-left text-sm transition ${
+                        activeTocId === item.id
+                          ? "border-gray-900 text-gray-900"
+                          : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-800"
+                      }`}
+                      style={{ paddingLeft: `${8 + (item.level - 1) * 8}px` }}
+                      title={item.text}
+                    >
+                      {item.text}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          </aside>
+
+          <article className="lg:col-start-2">
 
           {loading && !article && (
             <section className="space-y-4">
@@ -1102,7 +1522,8 @@ export default function ArticlePage() {
               <div className={styles.skeletonLineShort} />
             </div>
           )}
-        </article>
+          </article>
+        </div>
       </div>
     </div>
   );
