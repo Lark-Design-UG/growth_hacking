@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import styles from "./article.module.css";
 
 const PRESET_DOCUMENT_ID = "JCKEw8gDBiupjkko8ZCcOtYOnLd";
@@ -58,6 +58,56 @@ type ArticleApiData = {
 type RenderCtx = { blockIndex: number };
 type MergedCell = { text: string; rowSpan?: number; colSpan?: number };
 type TocItem = { id: string; text: string; level: number };
+
+function renderNoBreakShortCjk(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenRegex = /([\u4e00-\u9fff]{2,4})/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null = null;
+  let idx = 0;
+
+  while ((match = tokenRegex.exec(text)) !== null) {
+    const token = match[1];
+    const start = match.index;
+    const end = start + token.length;
+    const prev = start > 0 ? text[start - 1] : "";
+    const next = end < text.length ? text[end] : "";
+    const prevIsCjk = /[\u4e00-\u9fff]/.test(prev);
+    const nextIsCjk = /[\u4e00-\u9fff]/.test(next);
+
+    if (start > lastIndex) {
+      nodes.push(
+        <Fragment key={`${keyPrefix}-text-${idx++}`}>
+          {text.slice(lastIndex, start)}
+        </Fragment>
+      );
+    }
+
+    if (!prevIsCjk && !nextIsCjk) {
+      nodes.push(
+        <span key={`${keyPrefix}-nb-${idx++}`} className={styles.noBreakPhrase}>
+          {token}
+        </span>
+      );
+    } else {
+      nodes.push(
+        <Fragment key={`${keyPrefix}-raw-${idx++}`}>{token}</Fragment>
+      );
+    }
+
+    lastIndex = end;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(
+      <Fragment key={`${keyPrefix}-tail-${idx++}`}>
+        {text.slice(lastIndex)}
+      </Fragment>
+    );
+  }
+
+  return nodes.length ? nodes : [<Fragment key={`${keyPrefix}-full`}>{text}</Fragment>];
+}
 
 function normalizeHeadingText(text: string): string {
   return text
@@ -329,7 +379,10 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
     if (match.index > lastIndex) {
       nodes.push(
         <Fragment key={`${keyPrefix}-text-${idx++}`}>
-          {text.slice(lastIndex, match.index)}
+          {renderNoBreakShortCjk(
+            text.slice(lastIndex, match.index),
+            `${keyPrefix}-chunk-${idx}`
+          )}
         </Fragment>
       );
     }
@@ -372,13 +425,17 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   if (lastIndex < text.length) {
     nodes.push(
       <Fragment key={`${keyPrefix}-tail-${idx++}`}>
-        {text.slice(lastIndex)}
+        {renderNoBreakShortCjk(text.slice(lastIndex), `${keyPrefix}-tail-chunk-${idx}`)}
       </Fragment>
     );
   }
 
   if (!nodes.length) {
-    nodes.push(<Fragment key={`${keyPrefix}-plain`}>{text}</Fragment>);
+    nodes.push(
+      <Fragment key={`${keyPrefix}-plain`}>
+        {renderNoBreakShortCjk(text, `${keyPrefix}-plain-chunk`)}
+      </Fragment>
+    );
   }
 
   return nodes;
@@ -664,7 +721,7 @@ function renderBlock(block: ArticleBlock, ctx: RenderCtx): ReactNode {
         </pre>
       );
     case "hr":
-      return <hr key={`hr-${blockIndex}`} className={styles.hr} />;
+      return <div key={`hr-${blockIndex}`} className={styles.hr} aria-hidden="true" />;
     case "ul":
       return (
         <ul key={`ul-${blockIndex}`} className={styles.ul}>
@@ -868,16 +925,37 @@ function ArticleContent({
                 );
               }
               if (block.type === "divider") {
-                return <hr key={block.id} className={styles.dividerBlock} />;
+                return <div key={block.id} className={styles.dividerBlock} aria-hidden="true" />;
               }
               if (block.type === "image") {
+                const isBoardSnapshot = block.caption === "Board Snapshot";
+                const boardLink = block.imageToken
+                  ? `https://bytedance.larkoffice.com/board/${block.imageToken}`
+                  : "";
                 return (
-                  <figure key={block.id} className={styles.imageBlockWrap}>
+                  <figure
+                    key={block.id}
+                    className={`${styles.imageBlockWrap} ${
+                      isBoardSnapshot ? styles.boardBlockWrap : ""
+                    }`}
+                  >
                     <LazyImage
                       src={block.imageUrl}
                       alt={block.caption || `article-image-${index}`}
-                      className={styles.image}
+                      className={isBoardSnapshot ? styles.boardImage : styles.image}
                     />
+                    {isBoardSnapshot && boardLink ? (
+                      <p className={styles.boardLinkRow}>
+                        <a
+                          href={boardLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={styles.boardLink}
+                        >
+                          在飞书中打开完整画板
+                        </a>
+                      </p>
+                    ) : null}
                     {block.caption ? (
                       <figcaption className={styles.imageCaption}>
                         {block.caption}
@@ -1073,7 +1151,11 @@ export default function ArticlePage() {
   const [mounted, setMounted] = useState(false);
   const bgShader = "none";
   const params = useParams();
+  const searchParams = useSearchParams();
   const slug = params.slug as string;
+  const debugEnabled = searchParams.get("debug") === "1";
+  const debugDocsUrl =
+    searchParams.get("debugDocsUrl") ?? searchParams.get("debugDocUrl");
 
   const [loading, setLoading] = useState(false);
   const [streamComplete, setStreamComplete] = useState(false);
@@ -1190,20 +1272,38 @@ export default function ArticlePage() {
       setArticle(null);
 
       try {
-        const playbookRes = await fetch(`/api/playbook?slug=${encodeURIComponent(slug)}`);
-        const playbookResult = await playbookRes.json();
+        let docsUrl = "";
+        let documentId = "";
+        let recordId = slug;
+        let articleApiUrl = "";
 
-        if (!playbookResult.ok) {
-          throw new Error(playbookResult.error || "Record not found");
+        if (debugEnabled) {
+          const query = new URLSearchParams({
+            debug: "1",
+            stream: "1",
+          });
+          if (debugDocsUrl) {
+            query.set("debugDocsUrl", debugDocsUrl);
+          }
+          articleApiUrl = `/api/article?${query.toString()}`;
+          docsUrl = debugDocsUrl ?? "";
+          documentId = debugDocsUrl ? extractDocumentId(debugDocsUrl) ?? "" : "";
+        } else {
+          const playbookRes = await fetch(`/api/playbook?slug=${encodeURIComponent(slug)}`);
+          const playbookResult = await playbookRes.json();
+
+          if (!playbookResult.ok) {
+            throw new Error(playbookResult.error || "Record not found");
+          }
+
+          const record = playbookResult.data;
+          recordId = record.record_id;
+          docsUrl = collectDocUrl(record.fields) ?? "";
+          documentId = extractDocumentId(docsUrl) ?? "";
+          articleApiUrl = `/api/article?appToken=${APP_TOKEN}&tableId=${TABLE_ID}&recordId=${record.record_id}&stream=1`;
         }
 
-        const record = playbookResult.data;
-        const docsUrl = collectDocUrl(record.fields) ?? "";
-        const documentId = extractDocumentId(docsUrl) ?? "";
-
-        const articleRes = await fetch(
-          `/api/article?appToken=${APP_TOKEN}&tableId=${TABLE_ID}&recordId=${record.record_id}&stream=1`
-        );
+        const articleRes = await fetch(articleApiUrl);
 
         if (!articleRes.ok || !articleRes.body) {
           throw new Error(`HTTP ${articleRes.status}`);
@@ -1241,7 +1341,7 @@ export default function ArticlePage() {
 
             if (msg.type === "partial") {
               setArticle({
-                recordId: msg.recordId ?? record.record_id,
+                recordId: msg.recordId ?? recordId,
                 docsUrl: msg.docsUrl ?? docsUrl,
                 documentId: msg.documentId ?? documentId,
                 docTitle: msg.docTitle,
@@ -1274,7 +1374,7 @@ export default function ArticlePage() {
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+  }, [debugDocsUrl, debugEnabled, slug]);
 
   if (!mounted) {
     return (
@@ -1524,6 +1624,13 @@ export default function ArticlePage() {
           )}
           </article>
         </div>
+
+        <footer className="mt-14 border-t border-gray-200">
+          <div className="mx-auto flex w-full max-w-[1120px] items-center justify-between gap-4 py-6 text-sm text-gray-500">
+            <p>© {new Date().getFullYear()} Lark Growth Design Playbook</p>
+            <p>Built for growth stories and design insights.</p>
+          </div>
+        </footer>
       </div>
     </div>
   );

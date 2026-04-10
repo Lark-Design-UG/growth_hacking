@@ -75,6 +75,10 @@
   line-height: 1.78;
   color: #232323;
   font-size: 1.05rem;
+  word-break: normal;
+  word-break: auto-phrase;
+  text-wrap: pretty;
+  line-break: auto;
   /* max-width: 68ch; */
 }
 
@@ -84,6 +88,10 @@
   line-height: 1.78;
   color: #262626;
   font-size: 1.04rem;
+  word-break: normal;
+  word-break: auto-phrase;
+  text-wrap: pretty;
+  line-break: auto;
   /* max-width: 68ch; */
 }
 
@@ -108,9 +116,11 @@
 }
 
 .hr {
-  margin: 1.4rem 0;
+  display: block;
+  height: 1.5rem;
+  margin: 0.9rem 0;
   border: 0;
-  border-top: 1px solid #d4d4d4;
+  background: transparent;
 }
 
 .ul {
@@ -190,16 +200,22 @@
 
 .quoteBlock {
   margin: 1.3rem 0;
-  padding: 0.25rem 0 0.25rem 1rem;
-  border-left: 2px solid #d4d4d8;
+  padding: 0.35rem 0 0.35rem 1.1rem;
+  border-left: 3px solid #a1a1aa;
   background: transparent;
-  color: #444;
+  color: #111111;
+  font-size: 1.12rem;
+  line-height: 1.82;
+  font-weight: 520;
+  word-break: normal;
+  word-break: auto-phrase;
+  text-wrap: pretty;
+  line-break: auto;
 }
 
 .dividerBlock {
-  margin: 1.3rem 0;
-  border: 0;
-  border-top: 1px dashed #b8b8b8;
+  height: 1.6rem;
+  margin: 0.9rem 0;
 }
 
 .imageBlockWrap {
@@ -213,10 +229,44 @@
   line-height: 1.4;
   color: #6a6a6a;
   letter-spacing: 0.01em;
-  text-align: left;
+  text-align: center;
   max-width: 72ch;
   margin-left: auto;
   margin-right: auto;
+}
+
+.boardBlockWrap {
+  margin-top: 1rem;
+  margin-bottom: 1.2rem;
+}
+
+.boardImage {
+  display: block;
+  width: 100%;
+  height: min(56vw, 560px);
+  max-height: 560px;
+  object-fit: cover;
+  object-position: top center;
+  margin: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.6rem;
+  box-shadow: 0 6px 24px -20px rgba(0, 0, 0, 0.35);
+}
+
+.boardLinkRow {
+  margin-top: 0.55rem;
+  text-align: center;
+}
+
+.boardLink {
+  font-size: 0.9rem;
+  color: #374151;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.boardLink:hover {
+  color: #111827;
 }
 
 .gridBlock {
@@ -283,14 +333,18 @@
 }
 
 .unknownBlock {
-  margin: 0.75rem 0;
-  padding: 0.7rem 0.8rem;
-  border-radius: 0.5rem;
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
+  margin: 0.9rem 0;
+  padding: 0.9rem 1rem;
+  border-radius: 0.75rem;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
   font-size: 0.82rem;
-  color: #9a3412;
-  overflow-x: auto;
+  line-height: 1.6;
+  color: #92400e;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow: auto;
 }
 
 /* ── block skeleton (partial loading state) ──────────────────── */
@@ -379,6 +433,10 @@
   border: 1px solid #e5e5e5;
 }
 
+.noBreakPhrase {
+  white-space: nowrap;
+}
+
 .tableWrap {
   margin: 1.5rem 0;
   overflow-x: auto;
@@ -402,6 +460,12 @@
   border: 1px solid #ececec;
   padding: 0.7rem 0.85rem;
   letter-spacing: 0.01em;
+  white-space: nowrap;
+  word-break: normal;
+  word-break: auto-phrase;
+  overflow-wrap: normal;
+  line-break: auto;
+  text-wrap: pretty;
 }
 
 .td {
@@ -409,6 +473,12 @@
   padding: 0.7rem 0.85rem;
   color: #242424;
   vertical-align: top;
+  white-space: normal;
+  word-break: normal;
+  word-break: auto-phrase;
+  overflow-wrap: normal;
+  line-break: auto;
+  text-wrap: pretty;
 }
 
 .table tbody tr:nth-child(even) .td {

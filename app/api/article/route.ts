@@ -6,9 +6,10 @@ import {
   streamDocumentBlocks,
 } from "@/lib/feishu/client";
 
-const DEBUG_DOCS_URL =
+const DEFAULT_DEBUG_DOCS_URL =
   "https://bytedance.larkoffice.com/wiki/JCKEw8gDBiupjkko8ZCcOtYOnLd";
 const DEBUG_DOCUMENT_ID = "JCKEw8gDBiupjkko8ZCcOtYOnLd";
+const DEBUG_DOCS_URL_FROM_ENV = process.env.ARTICLE_DEBUG_DOCS_URL?.trim() || "";
 const GLOBAL_DEBUG_ENABLED =
   process.env.ARTICLE_DEBUG === "1" ||
   process.env.ARTICLE_DEBUG?.toLowerCase() === "true";
@@ -45,7 +46,7 @@ function collectDocUrl(value: unknown): string | null {
 }
 
 function extractDocumentId(url: string): string | null {
-  const match = url.match(/\/docx\/([A-Za-z0-9]+)/);
+  const match = url.match(/\/(?:docx|wiki)\/([A-Za-z0-9]+)/i);
   return match?.[1] ?? null;
 }
 
@@ -166,8 +167,10 @@ type DocxBlock = {
   bullet?: { elements?: DocxElement[] };
   ordered?: { elements?: DocxElement[] };
   callout?: { elements?: DocxElement[] };
+  quote?: { elements?: DocxElement[] };
   quote_container?: { elements?: DocxElement[] };
   image?: { token?: string; caption?: { content?: string } };
+  board?: { token?: string };
   divider?: Record<string, unknown>;
   grid?: Record<string, unknown>;
   children?: string[];
@@ -225,12 +228,17 @@ function blockToMarkdownLine(block: DocxBlock): string | null {
   if (block.bullet) return `- ${renderElementsToMarkdown(block.bullet.elements)}`;
   if (block.ordered) return `1. ${renderElementsToMarkdown(block.ordered.elements)}`;
   if (block.callout) return `> ${renderElementsToMarkdown(block.callout.elements)}`;
+  if (block.quote) return `> ${renderElementsToMarkdown(block.quote.elements)}`;
   if (block.quote_container)
     return `> ${renderElementsToMarkdown(block.quote_container.elements)}`;
   if (block.image?.token) {
     const caption = block.image.caption?.content ?? "";
     const url = `/api/feishu-image?token=${encodeURIComponent(block.image.token)}`;
     return `![${caption}](${url})`;
+  }
+  if (block.board?.token) {
+    const url = `/api/feishu-board-image?token=${encodeURIComponent(block.board.token)}`;
+    return `![Board Snapshot](${url})`;
   }
   if (block.text) return renderElementsToMarkdown(block.text.elements);
   if (block.block_type === 19) return "---";
@@ -258,6 +266,12 @@ function normalizeDocxBlock(block: DocxBlock): ArticleBlockPayload {
     return { id, type: "ordered", text: renderElementsToMarkdown(block.ordered.elements) };
   if (block.callout)
     return { id, type: "callout", text: renderElementsToMarkdown(block.callout.elements) };
+  if (block.quote)
+    return {
+      id,
+      type: "quote_container",
+      text: renderElementsToMarkdown(block.quote.elements),
+    };
   if (block.quote_container)
     return {
       id,
@@ -271,6 +285,15 @@ function normalizeDocxBlock(block: DocxBlock): ArticleBlockPayload {
       imageUrl: `/api/feishu-image?token=${encodeURIComponent(block.image.token)}`,
       imageToken: block.image.token,
       caption: block.image.caption?.content ?? "",
+    };
+  }
+  if (block.board?.token) {
+    return {
+      id,
+      type: "image",
+      imageUrl: `/api/feishu-board-image?token=${encodeURIComponent(block.board.token)}`,
+      imageToken: block.board.token,
+      caption: "Board Snapshot",
     };
   }
   if (block.divider || block.block_type === 19) return { id, type: "divider" };
@@ -301,6 +324,7 @@ function extractTextFromBlockTree(
     renderElementsToMarkdown(block.bullet?.elements) ||
     renderElementsToMarkdown(block.ordered?.elements) ||
     renderElementsToMarkdown(block.callout?.elements) ||
+    renderElementsToMarkdown(block.quote?.elements) ||
     renderElementsToMarkdown(block.quote_container?.elements) ||
     imageLine;
 
@@ -383,16 +407,21 @@ async function resolveDocumentId(
   debug: boolean,
   appToken: string | null,
   tableId: string | null,
-  recordId: string | null
+  recordId: string | null,
+  debugDocsUrl: string | null
 ): Promise<
   | { ok: true; documentId: string; docsUrl: string; tags: string[] }
   | { ok: false; response: Response }
 > {
   if (debug) {
+    const configuredDebugUrl =
+      debugDocsUrl?.trim() || DEBUG_DOCS_URL_FROM_ENV || DEFAULT_DEBUG_DOCS_URL;
+    const configuredDebugDocumentId =
+      extractDocumentId(configuredDebugUrl) ?? DEBUG_DOCUMENT_ID;
     return {
       ok: true,
-      documentId: DEBUG_DOCUMENT_ID,
-      docsUrl: DEBUG_DOCS_URL,
+      documentId: configuredDebugDocumentId,
+      docsUrl: configuredDebugUrl,
       tags: [],
     };
   }
@@ -547,6 +576,8 @@ export async function GET(request: Request) {
     const appToken = searchParams.get("appToken");
     const tableId = searchParams.get("tableId");
     const recordId = searchParams.get("recordId");
+    const debugDocsUrl =
+      searchParams.get("debugDocsUrl") ?? searchParams.get("debugDocUrl");
     const streaming = searchParams.get("stream") === "1";
 
     if (!debug && (!appToken || !tableId || !recordId)) {
@@ -556,7 +587,13 @@ export async function GET(request: Request) {
       );
     }
 
-    const resolved = await resolveDocumentId(debug, appToken, tableId, recordId);
+    const resolved = await resolveDocumentId(
+      debug,
+      appToken,
+      tableId,
+      recordId,
+      debugDocsUrl
+    );
     if (!resolved.ok) return resolved.response;
     const { documentId, docsUrl, tags } = resolved;
     const effectiveRecordId = recordId ?? "debug";
