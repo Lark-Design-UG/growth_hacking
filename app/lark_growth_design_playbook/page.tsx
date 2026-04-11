@@ -1,11 +1,32 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
+
+import { getHeroParametricGradient, heroGradientSeedForRecord } from "@/lib/hero-parametric-gradient";
+import { PlaybookFullscreenPathTracers } from "@/app/lark_growth_design_playbook/playbook-fullscreen-path-tracers";
+import { PlaybookSplashPaths } from "@/app/lark_growth_design_playbook/playbook-splash-paths";
+import { getPlaybookAppToken, getPlaybookTableId } from "@/lib/playbook-data-source";
+
+const PlaybookHeroShaderBackground = dynamic(() => import("./playbook-hero-shader-bg"), {
+  ssr: false,
+});
 
 type BaseRecord = {
   record_id: string;
+  /** 飞书多维表格记录常见顶层字段，用于「最新」排序 */
+  created_time?: number | string;
+  last_modified_time?: number | string;
   fields: {
     Title?: string;
     Category?: string;
@@ -34,21 +55,757 @@ type BaseData = {
   has_more: boolean;
 };
 
-const APP_TOKEN = "B4K3bAYKTau24es6Dxdcq3FEnig";
-const TABLE_ID = "tblHalmUkZ8AZSgp";
+const APP_TOKEN = getPlaybookAppToken();
+const TABLE_ID = getPlaybookTableId();
+
+/** Hero 全屏 ↔ 卡片：比 cubic 更顺滑的加减速 */
+function easeInOutQuint(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x < 0.5 ? 16 * x * x * x * x * x : 1 - Math.pow(-2 * x + 2, 5) / 2;
+}
+
+const HERO_SNAP_MS = 880;
+/** 切换完成后新 UI 渐显时长（与渐隐时长 HERO_SNAP_MS 分离） */
+const HERO_CHROME_FADE_IN_MS = 520;
+
+type HeroSnapAnim = {
+  active: boolean;
+  startTime: number;
+  from: number;
+  to: number;
+};
+
+function readHeroSpVisual(anim: HeroSnapAnim, spRef: { current: number }, now: number): number {
+  if (!anim.active) return spRef.current;
+  const u = Math.min(1, (now - anim.startTime) / HERO_SNAP_MS);
+  const p = easeInOutQuint(u);
+  return anim.from + (anim.to - anim.from) * p;
+}
+
+const HERO_CARD_GAP_PX = 12;
+/** 卡片顶相对 Hero 外包层的 offset（px），与 `heroLayout.top` 一致；0 表示贴齐内容区顶边 */
+const HERO_LOGO_CLEARANCE_PX = 0;
+/** 与 Tailwind max-w-7xl 对齐（80rem 按 16px） */
+const HERO_MAX_CONTENT_PX = 80 * 16;
+
+/**
+ * 与 `<main class="mx-auto max-w-7xl px-6 sm:px-8 lg:px-8">` 内容区同宽。
+ * 全屏动画最后一帧仍用该宽度；切到卡片 DOM 后 header 受 `max-width:100%` 约束，若此处偏大则收尾会横向跳变。
+ */
+function playbookMainContentInnerWidthPx(viewportW: number) {
+  const safeW = Math.max(320, viewportW);
+  const shell = Math.min(HERO_MAX_CONTENT_PX, safeW);
+  const padX = safeW >= 640 ? 32 : 24;
+  return Math.max(200, shell - 2 * padX);
+}
+
+/** 卡片态 Hero 高度：视口高度的 1/2（与 `computeHeroLayout` / 全屏↔卡片动画共用） */
+function heroCollapsedHeightPx(viewportH: number) {
+  const h = Math.max(1, viewportH);
+  return Math.round(h * 0.5);
+}
+
+function computeHeroLayout(viewportW: number, viewportH: number, p: number) {
+  const safeW = Math.max(320, viewportW);
+  const safeH = Math.max(480, viewportH);
+  const pp = Math.min(1, Math.max(0, p));
+  const cardW = playbookMainContentInnerWidthPx(safeW);
+  const collapsedH = heroCollapsedHeightPx(viewportH);
+  const outerW = (1 - pp) * safeW + pp * cardW;
+  const outerH = (1 - pp) * safeH + pp * collapsedH;
+  const top = pp * HERO_LOGO_CLEARANCE_PX;
+  const viewportScale = safeW > 0 ? outerW / safeW : 1;
+  const radius = 12 * pp;
+  return { outerW, outerH, top, viewportScale, collapsedH, cardW, radius };
+}
+
+function recordRecencyMs(r: BaseRecord): number {
+  const raw = r.last_modified_time ?? r.created_time;
+  if (raw == null) return 0;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Hero 与筛选无关：全表按修改/创建时间取最新的若干条 */
+function latestRecordsForHero(items: BaseRecord[], limit: number): BaseRecord[] {
+  if (items.length === 0 || limit <= 0) return [];
+  const indexed = items.map((item, index) => ({ item, index }));
+  indexed.sort((a, b) => {
+    const ta = recordRecencyMs(a.item);
+    const tb = recordRecencyMs(b.item);
+    if (tb !== ta) return tb - ta;
+    return b.index - a.index;
+  });
+  return indexed.slice(0, limit).map(({ item }) => item);
+}
+
+/** 卡片 Hero 顶栏「展开全屏」图标 */
+function PlaybookCardFullscreenIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
+      <path
+        d="M9 3H5a2 2 0 0 0-2 2v4m12-6h4a2 2 0 0 1 2 2v4M7 21H5a2 2 0 0 1-2-2v-4m16 0v4a2 2 0 0 1-2 2h-4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+type HeroChromeSurface = "fullscreen" | "card";
+
+type PlaybookHeroSlidesCardChromeProps = {
+  heroSlides: BaseRecord[];
+  activeHeroSlide: number;
+  stripEmojiFn: (value: string) => string;
+  setActiveHeroSlide: Dispatch<SetStateAction<number>>;
+  onToggleLayout: () => void;
+};
+
+function PlaybookHeroSlidesCardChrome({
+  heroSlides,
+  activeHeroSlide,
+  stripEmojiFn,
+  setActiveHeroSlide,
+  onToggleLayout,
+}: PlaybookHeroSlidesCardChromeProps) {
+  const goHeroRing = useCallback(
+    (dir: -1 | 1) => {
+      setActiveHeroSlide((prev) => {
+        const n = heroSlides.length;
+        if (n < 2) return prev;
+        if (dir === 1) return prev >= n - 1 ? 0 : prev + 1;
+        return prev <= 0 ? n - 1 : prev - 1;
+      });
+    },
+    [heroSlides.length, setActiveHeroSlide],
+  );
+
+  if (heroSlides.length === 0) return null;
+
+  const currentSlide =
+    heroSlides[Math.max(0, Math.min(heroSlides.length - 1, activeHeroSlide))]!;
+  const copyMeta = [currentSlide.fields.Category, currentSlide.fields.Region?.[0]]
+    .filter(Boolean)
+    .map((value) => stripEmojiFn(String(value)))
+    .join(" ｜ ");
+  const copyHref = `/article/${currentSlide.fields.Slug || currentSlide.record_id}`;
+
+  return (
+    <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col">
+      <div
+        role="navigation"
+        aria-label="Playbook"
+        className="relative z-20 flex w-full min-w-0 shrink-0 items-center px-4 pb-2 pt-2.5 text-white sm:px-5 sm:pb-2.5 sm:pt-3 lg:px-6 lg:pb-3 lg:pt-3.5"
+      >
+        <Link
+          href="/lark_growth_design_playbook"
+          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-white/90"
+        >
+          <Image
+            src="/Lark%20Design.svg"
+            alt="Lark Design"
+            width={186}
+            height={38}
+            className="h-9 w-auto brightness-0 invert"
+            priority
+          />
+        </Link>
+        <p className="pointer-events-none absolute left-1/2 top-1/2 z-0 max-w-[min(100%-5rem,calc(100vw-6rem))] -translate-x-1/2 -translate-y-1/2 px-2 text-center text-[11px] font-semibold uppercase leading-snug tracking-wide text-white sm:max-w-[min(100%-6.5rem,40rem)] sm:text-xs md:text-sm">
+          Lark Growth Design Playbook
+        </p>
+        <button
+          type="button"
+          onClick={onToggleLayout}
+          className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-white/90 bg-white/10 text-white backdrop-blur-sm transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-white hover:bg-white/20"
+          aria-label="展开全屏"
+        >
+          <PlaybookCardFullscreenIcon className="size-[1.125rem]" />
+        </button>
+      </div>
+
+      <div className="relative min-h-0 flex-1">
+        <div
+          className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-center px-4 pb-14 pt-2 sm:px-6 sm:pb-16 sm:pt-4"
+          aria-live="polite"
+        >
+          <div
+            key={currentSlide.record_id}
+            className="playbook-hero-copy-swap pointer-events-auto max-w-4xl"
+          >
+            {copyMeta ? (
+              <p className="mb-3 text-left text-xs font-medium uppercase tracking-wide text-white/75 sm:mb-4">
+                {copyMeta}
+              </p>
+            ) : null}
+            <h1 className="text-balance text-2xl font-semibold leading-[1.1] tracking-tight text-white sm:text-3xl md:text-4xl lg:text-5xl">
+              {currentSlide.fields.Title || "Untitled"}
+            </h1>
+            <Link
+              href={copyHref}
+              className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-900 transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98] sm:mt-6 sm:px-5 sm:py-2.5"
+            >
+              立即阅读
+              <span aria-hidden className="translate-y-px">
+                &gt;
+              </span>
+            </Link>
+          </div>
+        </div>
+
+        <nav
+          aria-label="篇目切换"
+          className="pointer-events-none absolute inset-y-0 right-2 z-30 flex items-center sm:right-3 lg:right-4"
+        >
+          <ol className="pointer-events-auto flex flex-col items-center gap-2.5 py-6">
+            {heroSlides.map((item, i) => {
+              const on = i === activeHeroSlide;
+              return (
+                <li key={item.record_id}>
+                  <button
+                    type="button"
+                    aria-label={`第 ${i + 1} 篇`}
+                    aria-current={on ? "true" : undefined}
+                    onClick={() => setActiveHeroSlide(i)}
+                    className={`block rounded-full transition-[height,width,background-color] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
+                      on
+                        ? "h-7 w-[5px] bg-white ring-1 ring-inset ring-white/40"
+                        : "h-2 w-2 bg-white/40 hover:bg-white/65"
+                    }`}
+                  />
+                </li>
+              );
+            })}
+          </ol>
+        </nav>
+
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-3 z-40 flex flex-row items-center justify-center gap-3 sm:bottom-4"
+          role="group"
+          aria-label="切换篇目"
+        >
+          <button
+            type="button"
+            aria-label="上一篇，在第一篇时回到最后一篇"
+            onClick={() => goHeroRing(-1)}
+            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/90 bg-transparent text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none sm:h-11 sm:w-11"
+          >
+            <svg viewBox="0 0 24 24" fill="none" className="size-5 shrink-0 sm:size-[22px]" aria-hidden>
+              <path
+                d="M7 14.5L12 9.5l5 5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            aria-label="下一篇，在最后一篇时回到第一篇"
+            onClick={() => goHeroRing(1)}
+            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/90 bg-transparent text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none sm:h-11 sm:w-11"
+          >
+            <svg viewBox="0 0 24 24" fill="none" className="size-5 shrink-0 sm:size-[22px]" aria-hidden>
+              <path
+                d="M7 9.5L12 14.5l5-5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type PlaybookHeroSlidesFullscreenChromeProps = {
+  heroSlides: BaseRecord[];
+  activeHeroSlide: number;
+  heroSlidesKey: string;
+  stripEmojiFn: (value: string) => string;
+  setActiveHeroSlide: Dispatch<SetStateAction<number>>;
+  onEnterCardMode: () => void;
+};
+
+function PlaybookHeroSlidesFullscreenChrome({
+  heroSlides,
+  activeHeroSlide,
+  heroSlidesKey,
+  stripEmojiFn,
+  setActiveHeroSlide,
+  onEnterCardMode,
+}: PlaybookHeroSlidesFullscreenChromeProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const programmaticScrollRef = useRef(false);
+  const programmaticScrollClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollSettleRaf = useRef(0);
+
+  const lockProgrammaticScroll = useCallback((ms: number) => {
+    programmaticScrollRef.current = true;
+    if (programmaticScrollClearRef.current) {
+      clearTimeout(programmaticScrollClearRef.current);
+    }
+    programmaticScrollClearRef.current = setTimeout(() => {
+      programmaticScrollClearRef.current = null;
+      programmaticScrollRef.current = false;
+    }, ms);
+  }, []);
+
+  const applySlideFromScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || heroSlides.length === 0) return;
+    const h = el.clientHeight;
+    if (h < 8) return;
+    const i = Math.round(el.scrollTop / h);
+    const clamped = Math.max(0, Math.min(heroSlides.length - 1, i));
+    setActiveHeroSlide((prev) => (prev === clamped ? prev : clamped));
+  }, [heroSlides.length, setActiveHeroSlide]);
+
+  const onScrollAreaScroll = useCallback(() => {
+    if (programmaticScrollRef.current) return;
+    cancelAnimationFrame(scrollSettleRaf.current);
+    scrollSettleRaf.current = requestAnimationFrame(applySlideFromScroll);
+  }, [applySlideFromScroll]);
+
+  const goHeroRing = useCallback(
+    (dir: -1 | 1) => {
+      setActiveHeroSlide((prev) => {
+        const n = heroSlides.length;
+        if (n < 2) return prev;
+        if (dir === 1) return prev >= n - 1 ? 0 : prev + 1;
+        return prev <= 0 ? n - 1 : prev - 1;
+      });
+    },
+    [heroSlides.length, setActiveHeroSlide],
+  );
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || heroSlides.length === 0) return;
+    const h = el.clientHeight;
+    if (h < 8) return;
+    const target = activeHeroSlide * h;
+    if (Math.abs(el.scrollTop - target) < 4) {
+      return;
+    }
+    lockProgrammaticScroll(72);
+    el.scrollTop = target;
+    return () => {
+      if (programmaticScrollClearRef.current) {
+        clearTimeout(programmaticScrollClearRef.current);
+        programmaticScrollClearRef.current = null;
+      }
+      programmaticScrollRef.current = false;
+    };
+  }, [activeHeroSlide, heroSlides.length, heroSlidesKey, lockProgrammaticScroll]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (programmaticScrollRef.current) return;
+      lockProgrammaticScroll(72);
+      const h = el.clientHeight;
+      if (h > 0) {
+        el.scrollTop = activeHeroSlide * h;
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [activeHeroSlide, heroSlides.length, lockProgrammaticScroll]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScrollEnd = () => {
+      if (programmaticScrollRef.current) return;
+      applySlideFromScroll();
+    };
+    el.addEventListener("scrollend", onScrollEnd);
+    return () => el.removeEventListener("scrollend", onScrollEnd);
+  }, [applySlideFromScroll]);
+
+  useEffect(() => {
+    return () => {
+      cancelAnimationFrame(scrollSettleRaf.current);
+      if (programmaticScrollClearRef.current) clearTimeout(programmaticScrollClearRef.current);
+    };
+  }, []);
+
+  if (heroSlides.length === 0) return null;
+
+  const currentSlide =
+    heroSlides[Math.max(0, Math.min(heroSlides.length - 1, activeHeroSlide))]!;
+  const copyMeta = [currentSlide.fields.Category, currentSlide.fields.Region?.[0]]
+    .filter(Boolean)
+    .map((value) => stripEmojiFn(String(value)))
+    .join(" ｜ ");
+  const copyHref = `/article/${currentSlide.fields.Slug || currentSlide.record_id}`;
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div
+        role="navigation"
+        aria-label="Playbook"
+        className="relative z-20 grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-6 pb-3 pt-6 sm:px-8 sm:pt-8 lg:px-12 lg:pt-10"
+      >
+        <div className="flex min-w-0 justify-start">
+          <Link
+            href="/lark_growth_design_playbook"
+            className="flex shrink-0 items-center outline-offset-4"
+          >
+            <Image
+              src="/Lark%20Design.svg"
+              alt="Lark Design"
+              width={186}
+              height={38}
+              className="h-9 w-auto brightness-0 invert drop-shadow-sm"
+              priority
+            />
+          </Link>
+        </div>
+        <p className="pointer-events-none max-w-[min(52vw,20rem)] truncate px-2 text-center text-xs font-semibold uppercase tracking-wide text-white/95 sm:max-w-[min(40vw,28rem)] sm:text-sm md:max-w-none md:overflow-visible md:whitespace-normal md:text-clip">
+          Lark Growth Design Playbook
+        </p>
+        <div className="flex min-w-0 justify-end">
+          <button
+            type="button"
+            onClick={onEnterCardMode}
+            className="shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/10 sm:px-4 sm:py-2 sm:text-sm"
+          >
+            查看全部
+          </button>
+        </div>
+      </div>
+
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={onScrollAreaScroll}
+          className="h-full snap-y snap-mandatory overflow-y-auto overscroll-y-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          style={{
+            scrollPaddingBottom: "calc(5.5rem + env(safe-area-inset-bottom, 0px))",
+          }}
+        >
+          {heroSlides.map((item) => (
+            <div
+              key={item.record_id}
+              className="min-h-full shrink-0 snap-start"
+              aria-hidden
+            />
+          ))}
+        </div>
+
+        <div
+          className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-center px-6 pb-20 pt-10 sm:px-8 sm:pb-24 sm:pt-14 lg:px-12 lg:pr-16"
+          aria-live="polite"
+        >
+          <div
+            key={currentSlide.record_id}
+            className="playbook-hero-copy-swap pointer-events-auto max-w-4xl"
+          >
+            {copyMeta ? (
+              <p className="mb-6 text-left text-xs font-medium uppercase tracking-wide text-white/75">
+                {copyMeta}
+              </p>
+            ) : null}
+            <h1 className="text-balance text-4xl font-semibold leading-[1.08] tracking-tight text-white drop-shadow-sm sm:text-5xl md:text-6xl lg:text-7xl">
+              {currentSlide.fields.Title || "Untitled"}
+            </h1>
+            <Link
+              href={copyHref}
+              className="mt-8 inline-flex items-center gap-1.5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-stone-900 shadow-sm transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98]"
+            >
+              阅读全文
+              <span aria-hidden className="translate-y-px">
+                &gt;
+              </span>
+            </Link>
+          </div>
+        </div>
+
+        <nav
+          aria-label="篇目切换"
+          className="pointer-events-none absolute inset-y-0 right-3 z-30 flex items-center sm:right-5 lg:right-8"
+        >
+          <ol className="pointer-events-auto flex flex-col items-center gap-2.5 py-8">
+            {heroSlides.map((item, i) => {
+              const on = i === activeHeroSlide;
+              return (
+                <li key={item.record_id}>
+                  <button
+                    type="button"
+                    aria-label={`第 ${i + 1} 篇`}
+                    aria-current={on ? "true" : undefined}
+                    onClick={() => setActiveHeroSlide(i)}
+                    className={`block rounded-full transition-[height,width,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
+                      on
+                        ? "h-7 w-[5px] bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.35)]"
+                        : "h-2 w-2 bg-white/40 hover:bg-white/65"
+                    }`}
+                  />
+                </li>
+              );
+            })}
+          </ol>
+        </nav>
+
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-4 z-40 flex flex-row items-center justify-center gap-3 sm:bottom-5"
+          role="group"
+          aria-label="切换篇目"
+        >
+          <button
+            type="button"
+            aria-label="上一篇，在第一篇时回到最后一篇"
+            onClick={() => goHeroRing(-1)}
+            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-transparent text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none"
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              className="shrink-0"
+              aria-hidden
+            >
+              <path
+                d="M7 14.5L12 9.5l5 5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            aria-label="下一篇，在最后一篇时回到第一篇"
+            onClick={() => goHeroRing(1)}
+            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-transparent text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none"
+          >
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              className="shrink-0"
+              aria-hidden
+            >
+              <path
+                d="M7 9.5L12 14.5l5-5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlaybookHeroEmptyCardChrome({ onToggleLayout }: { onToggleLayout: () => void }) {
+  return (
+    <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col items-stretch">
+      <div
+        role="navigation"
+        aria-label="Playbook"
+        className="relative z-20 flex w-full min-w-0 shrink-0 items-center px-4 pb-2 pt-2.5 text-white sm:px-5 sm:pb-2.5 sm:pt-3 lg:px-6 lg:pb-3 lg:pt-3.5"
+      >
+        <Link
+          href="/lark_growth_design_playbook"
+          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-white/90"
+        >
+          <Image
+            src="/Lark%20Design.svg"
+            alt="Lark Design"
+            width={186}
+            height={38}
+            className="h-9 w-auto brightness-0 invert"
+            priority
+          />
+        </Link>
+        <p className="pointer-events-none absolute left-1/2 top-1/2 z-0 max-w-[min(100%-5rem,calc(100vw-6rem))] -translate-x-1/2 -translate-y-1/2 px-2 text-center text-[11px] font-semibold uppercase leading-snug tracking-wide text-white sm:max-w-[min(100%-6.5rem,40rem)] sm:text-xs md:text-sm">
+          Lark Growth Design Playbook
+        </p>
+        <button
+          type="button"
+          onClick={onToggleLayout}
+          className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-white/90 bg-white/10 text-white backdrop-blur-sm transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-white hover:bg-white/20"
+          aria-label="展开全屏"
+        >
+          <PlaybookCardFullscreenIcon className="size-[1.125rem]" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PlaybookHeroEmptyFullscreenChrome({ onToggleLayout }: { onToggleLayout: () => void }) {
+  return (
+    <>
+      <div
+        role="navigation"
+        aria-label="Playbook"
+        className="relative z-20 flex shrink-0 items-center justify-between gap-4 px-6 pb-2 pt-6 sm:px-8 sm:pt-8 lg:px-12 lg:pt-10"
+      >
+        <Link
+          href="/lark_growth_design_playbook"
+          className="flex min-w-0 shrink-0 items-center outline-offset-4"
+        >
+          <Image
+            src="/Lark%20Design.svg"
+            alt="Lark Design"
+            width={186}
+            height={38}
+            className="h-9 w-auto brightness-0 invert"
+            priority
+          />
+        </Link>
+        <button
+          type="button"
+          onClick={onToggleLayout}
+          className="shrink-0 rounded-full border border-stone-900/15 bg-white/85 px-3 py-1.5 text-xs font-semibold text-stone-800 shadow-sm backdrop-blur-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] hover:bg-white sm:text-sm"
+          aria-pressed={false}
+          aria-label="收起为卡片"
+        >
+          卡片
+        </button>
+      </div>
+      <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-1 flex-col justify-center px-6 py-10 sm:px-8 sm:py-14 lg:px-12">
+        <div className="max-w-3xl">
+          <h1 className="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl md:text-6xl">
+            Lark Growth Design Playbook
+          </h1>
+          <p className="mt-6 max-w-xl text-base leading-relaxed text-white/75">
+            Discover insights, experiments, and best practices for driving growth through design.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+const LINE_CAP_BEFORE_SEAL = 0.88;
 
 export default function PlaybookPage() {
   const [data, setData] = useState<BaseData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** 首屏白底遮罩：请求结束后先拉满线再关 */
+  const [splashVisible, setSplashVisible] = useState(true);
+  /** 0–1，与接口无关的爬行；收到响应后设为 1 并等 transitionend 再关遮罩 */
+  const [lineRatio, setLineRatio] = useState(0);
+  const [isFetching, setIsFetching] = useState(true);
+  /** 为 true 时进度条才有 transform transition（收尾拉满）；爬行阶段为 false 避免每 tick 都动画 */
+  const [sealPhase, setSealPhase] = useState(false);
+  const sealingRef = useRef(false);
+  const splashDismissedRef = useRef(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
-  const [activeHeroIndex, setActiveHeroIndex] = useState(0);
   const [isFilterSticky, setIsFilterSticky] = useState(false);
+  const [activeHeroSlide, setActiveHeroSlide] = useState(0);
+  const [heroSpDisplay, setHeroSpDisplay] = useState(0);
+  /** 与 heroSp 目标一致：全屏(0) 时锁整页滚动，卡片(1) 时恢复 */
+  const [heroWantsFullLayout, setHeroWantsFullLayout] = useState(true);
+  /** 全屏→卡片完成后递增，强制列表重挂载以重播 playbook-card-enter */
+  const [cardGridRevealEpoch, setCardGridRevealEpoch] = useState(0);
+  /** 正在过渡到卡片模式时隐藏列表，避免 Hero 动画期间先看到静态卡片 */
+  const [cardGridAwaitingReveal, setCardGridAwaitingReveal] = useState(false);
+  /** 全屏 / 卡片两套 Hero 控件：全屏→卡片在 snap 结束后切换；卡片→全屏在 snap 开始时切换以免宽度被 main 夹住 */
+  const [heroChromeSurface, setHeroChromeSurface] = useState<HeroChromeSurface>("fullscreen");
+  const [heroChromeVisible, setHeroChromeVisible] = useState(true);
+  const [heroChromeFadeMs, setHeroChromeFadeMs] = useState(HERO_SNAP_MS);
+  const [viewportSize, setViewportSize] = useState({ w: 1200, h: 800 });
+  const heroSpDisplayRef = useRef(0);
+  const heroMotionReduceRef = useRef(false);
+  /** WebGL 背景在 prefers-reduced-motion 时关闭，仅保留 CSS 渐变 */
+  const [reduceHeroShaderMotion, setReduceHeroShaderMotion] = useState(false);
+  const splashCurveRef = useRef<SVGPathElement | null>(null);
+  const splashHLineRef = useRef<SVGLineElement | null>(null);
+  const splashVLineRef = useRef<SVGLineElement | null>(null);
+  /** 与 `public/playbook-load-paths.svg` 三条线一一对应：曲线、水平线、竖线 */
+  const [splashStrokeLens, setSplashStrokeLens] = useState<[number, number, number]>([0, 0, 0]);
+  const heroAnimRef = useRef<HeroSnapAnim>({
+    active: false,
+    startTime: 0,
+    from: 0,
+    to: 0,
+  });
+  const heroScrollPortRef = useRef<HTMLDivElement | null>(null);
   const filterBarRef = useRef<HTMLDivElement | null>(null);
 
+  const beginHeroSnap = useCallback((to: number) => {
+    const now = performance.now();
+    const visual = readHeroSpVisual(heroAnimRef.current, heroSpDisplayRef, now);
+    if (heroMotionReduceRef.current) {
+      const a = heroAnimRef.current;
+      a.active = false;
+      heroSpDisplayRef.current = to;
+      setHeroSpDisplay(to);
+      setHeroWantsFullLayout(to < 0.5);
+      setHeroChromeSurface(to === 1 ? "card" : "fullscreen");
+      setHeroChromeFadeMs(HERO_CHROME_FADE_IN_MS);
+      setHeroChromeVisible(true);
+      setCardGridAwaitingReveal(false);
+      if (to === 1) setCardGridRevealEpoch((e) => e + 1);
+      return;
+    }
+    if (Math.abs(visual - to) < 0.004) return;
+    setHeroWantsFullLayout(to < 0.5);
+    if (to === 0) setCardGridAwaitingReveal(false);
+    if (to === 1) setCardGridAwaitingReveal(true);
+    /**
+     * 卡片→全屏：立刻挂到全屏 DOM。若在 card 分支里动画，header 会受 main 内 `max-width:100%` 限制无法随 outerW 变宽，收尾与全屏布局不一致。
+     * 全屏→卡片：仍只在动画结束再切 card（最后一帧宽度已与 main 内容区对齐）。
+     */
+    if (to === 0) setHeroChromeSurface("fullscreen");
+    setHeroChromeFadeMs(HERO_SNAP_MS);
+    setHeroChromeVisible(false);
+    const a = heroAnimRef.current;
+    a.active = true;
+    a.startTime = now;
+    a.from = visual;
+    a.to = to;
+  }, []);
+
+  const toggleHeroLayout = useCallback(() => {
+    const now = performance.now();
+    const visual = readHeroSpVisual(heroAnimRef.current, heroSpDisplayRef, now);
+    beginHeroSnap(visual < 0.5 ? 1 : 0);
+  }, [beginHeroSnap]);
+
+  const dismissSplash = useCallback(() => {
+    if (splashDismissedRef.current) return;
+    splashDismissedRef.current = true;
+    sealingRef.current = false;
+    setSplashVisible(false);
+    setLoading(false);
+  }, []);
+
   const fetchData = async () => {
+    splashDismissedRef.current = false;
     setLoading(true);
+    setSplashVisible(true);
+    setLineRatio(0);
+    setSealPhase(false);
+    setIsFetching(true);
+    sealingRef.current = false;
     setError(null);
 
     try {
@@ -65,9 +822,75 @@ export default function PlaybookPage() {
     } catch (err) {
       setError(String(err));
     } finally {
-      setLoading(false);
+      setIsFetching(false);
+      const reduceMotion =
+        typeof window !== "undefined" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduceMotion) {
+        setLineRatio(1);
+        dismissSplash();
+      } else {
+        sealingRef.current = true;
+        setSealPhase(true);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            setLineRatio(1);
+          });
+        });
+      }
     }
   };
+
+  /** 请求进行中：每帧微增 lineRatio，三条 stroke 同步延伸 */
+  useEffect(() => {
+    if (!isFetching || !splashVisible) return;
+    let raf = 0;
+    const tick = () => {
+      setLineRatio((p) => {
+        if (p >= LINE_CAP_BEFORE_SEAL) return p;
+        const room = LINE_CAP_BEFORE_SEAL - p;
+        return p + Math.max(0.00035, room * 0.028);
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isFetching, splashVisible]);
+
+  useLayoutEffect(() => {
+    if (!splashVisible) return;
+    const measure = () => {
+      const c = splashCurveRef.current?.getTotalLength() ?? 0;
+      const h = splashHLineRef.current?.getTotalLength() ?? 0;
+      const v = splashVLineRef.current?.getTotalLength() ?? 0;
+      if (c > 0 && h > 0 && v > 0) {
+        setSplashStrokeLens([c, h, v]);
+      }
+    };
+    const id = requestAnimationFrame(measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(id);
+      window.removeEventListener("resize", measure);
+    };
+  }, [splashVisible, viewportSize.w, viewportSize.h]);
+
+  const onSplashProgressTransitionEnd = (
+    e: React.TransitionEvent<SVGGeometryElement>,
+  ) => {
+    if (!sealingRef.current) return;
+    if (e.propertyName !== "stroke-dashoffset") return;
+    dismissSplash();
+  };
+
+  /** transitionend 偶发不触发时的兜底 */
+  useEffect(() => {
+    if (!sealPhase || lineRatio < 1 || !splashVisible) return;
+    const t = window.setTimeout(() => {
+      if (sealingRef.current) dismissSplash();
+    }, 1150);
+    return () => window.clearTimeout(t);
+  }, [sealPhase, lineRatio, splashVisible, dismissSplash]);
 
   useEffect(() => {
     fetchData();
@@ -105,13 +928,6 @@ export default function PlaybookPage() {
     });
   };
 
-  const getCoverImage = (item: BaseRecord) => {
-    if (item.fields.Cover && item.fields.Cover.length > 0 && item.fields.Cover[0].file_token) {
-      return `/api/feishu-image?token=${encodeURIComponent(item.fields.Cover[0].file_token)}`;
-    }
-    return null;
-  };
-
   const stripEmoji = (value: string) =>
     value
       .replace(/\p{Extended_Pictographic}/gu, "")
@@ -119,163 +935,448 @@ export default function PlaybookPage() {
       .replace(/\s+/g, " ")
       .trim();
 
-  const gradientPresets = [
-    "linear-gradient(135deg,#dbeafe 0%,#bfdbfe 45%,#93c5fd 100%)",
-    "linear-gradient(135deg,#fae8ff 0%,#e9d5ff 45%,#c4b5fd 100%)",
-    "linear-gradient(135deg,#fef3c7 0%,#fde68a 45%,#fcd34d 100%)",
-    "linear-gradient(135deg,#dcfce7 0%,#bbf7d0 45%,#86efac 100%)",
-    "linear-gradient(135deg,#fee2e2 0%,#fecaca 45%,#fca5a5 100%)",
-    "linear-gradient(135deg,#cffafe 0%,#a5f3fc 45%,#67e8f9 100%)",
-  ];
-
-  const getGradientForItem = (seed: string) => {
-    let hash = 0;
-    for (let i = 0; i < seed.length; i += 1) {
-      hash = (hash << 5) - hash + seed.charCodeAt(i);
-      hash |= 0;
-    }
-    return gradientPresets[Math.abs(hash) % gradientPresets.length];
-  };
-
   const visibleItems = filteredItems();
-  const heroItems = visibleItems.slice(0, 5);
-  const activeHeroItem = heroItems[activeHeroIndex];
+  const HERO_LATEST_COUNT = 5;
+  const heroSlides = latestRecordsForHero(data?.items ?? [], HERO_LATEST_COUNT);
+  const heroSlidesKey = heroSlides.map((h) => h.record_id).join(",");
+  const activeHeroBgRecord =
+    heroSlides.length > 0
+      ? (heroSlides[Math.max(0, Math.min(heroSlides.length - 1, activeHeroSlide))] ?? null)
+      : null;
+  const activeHeroBgSeed = activeHeroBgRecord ? heroGradientSeedForRecord(activeHeroBgRecord) : "";
 
-  const goPrevHero = () => {
-    if (heroItems.length === 0) return;
-    setActiveHeroIndex((prev) => (prev - 1 + heroItems.length) % heroItems.length);
-  };
-
-  const goNextHero = () => {
-    if (heroItems.length === 0) return;
-    setActiveHeroIndex((prev) => (prev + 1) % heroItems.length);
-  };
+  const scrollPageLocked = heroSlides.length > 0 && heroWantsFullLayout;
 
   useEffect(() => {
-    if (heroItems.length === 0) return;
-
-    if (activeHeroIndex >= heroItems.length) {
-      setActiveHeroIndex(0);
+    if (!scrollPageLocked) {
+      document.documentElement.style.removeProperty("overflow");
+      document.body.style.removeProperty("overflow");
       return;
     }
-
-    const timer = window.setInterval(goNextHero, 5000);
-
-    return () => window.clearInterval(timer);
-  }, [heroItems.length]);
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    window.scrollTo(0, 0);
+    return () => {
+      document.documentElement.style.removeProperty("overflow");
+      document.body.style.removeProperty("overflow");
+    };
+  }, [scrollPageLocked]);
 
   useEffect(() => {
-    const onScroll = () => {
-      if (!filterBarRef.current) return;
-      const { top } = filterBarRef.current.getBoundingClientRect();
-      setIsFilterSticky(top <= 0.5);
-    };
+    setActiveHeroSlide(0);
+  }, [heroSlidesKey]);
 
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+  useEffect(() => {
+    if (heroSlides.length === 0) return;
+    if (activeHeroSlide >= heroSlides.length) {
+      setActiveHeroSlide(0);
+    }
+  }, [heroSlides.length, activeHeroSlide]);
+
+  useEffect(() => {
+    const syncViewport = () =>
+      setViewportSize({ w: window.innerWidth, h: window.innerHeight });
+    syncViewport();
+    window.addEventListener("resize", syncViewport);
+    return () => window.removeEventListener("resize", syncViewport);
   }, []);
 
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const syncMq = () => {
+      heroMotionReduceRef.current = mq.matches;
+      setReduceHeroShaderMotion(mq.matches);
+    };
+    syncMq();
+    mq.addEventListener("change", syncMq);
+    return () => mq.removeEventListener("change", syncMq);
+  }, []);
+
+  /** 全屏 ↔ 卡片：临界值触发后缓动到目标（时长见 HERO_SNAP_MS） */
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      const a = heroAnimRef.current;
+      if (a.active) {
+        const now = performance.now();
+        const u = Math.min(1, (now - a.startTime) / HERO_SNAP_MS);
+        const p = easeInOutQuint(u);
+        const v = a.from + (a.to - a.from) * p;
+        heroSpDisplayRef.current = v;
+        setHeroSpDisplay(v);
+        if (u >= 1) {
+          a.active = false;
+          heroSpDisplayRef.current = a.to;
+          setHeroSpDisplay(a.to);
+          const nextSurface: HeroChromeSurface = a.to === 1 ? "card" : "fullscreen";
+          setHeroChromeSurface(nextSurface);
+          setHeroChromeFadeMs(HERO_CHROME_FADE_IN_MS);
+          setHeroChromeVisible(false);
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => setHeroChromeVisible(true));
+          });
+          if (a.to === 1) {
+            setCardGridAwaitingReveal(false);
+            setCardGridRevealEpoch((e) => e + 1);
+          }
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  useEffect(() => {
+    let raf = 0;
+
+    const tick = () => {
+      if (filterBarRef.current) {
+        const { top } = filterBarRef.current.getBoundingClientRect();
+        /** 筛选条 `top:0` 吸顶；条顶贴近视口顶时显示收缩态 Logo */
+        setIsFilterSticky(top <= 6);
+      }
+    };
+
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(tick);
+    };
+
+    tick();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", tick);
+    };
+  }, [loading]);
+
+  const heroSp = heroSpDisplay;
+  const heroLayout = computeHeroLayout(viewportSize.w, viewportSize.h, heroSp);
+  const heroShellBgTransparent = heroSp < 0.02;
+  /** 全屏幻灯：隐藏首屏以下 UI，避免缩放/圆角外漏出白底或列表 */
+  const playbookChromeFullscreen = heroChromeSurface === "fullscreen";
+
+  const showPage = !loading;
+
+  useEffect(() => {
+    if (!showPage) return;
+    if (playbookChromeFullscreen) {
+      document.documentElement.style.background = "transparent";
+      document.body.style.background = "transparent";
+    } else {
+      document.documentElement.style.removeProperty("background");
+      document.body.style.removeProperty("background");
+    }
+    return () => {
+      document.documentElement.style.removeProperty("background");
+      document.body.style.removeProperty("background");
+    };
+  }, [showPage, playbookChromeFullscreen]);
+
   return (
-    <div className="min-h-screen bg-white text-stone-900">
-      <header className="relative overflow-hidden bg-[radial-gradient(circle_at_18%_20%,#93c5fd_0%,#60a5fa_34%,#3b82f6_68%,#1d4ed8_100%)] text-white md:min-h-[680px]">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_82%_12%,rgba(186,230,253,0.35),transparent_46%)]" />
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(120deg,rgba(255,255,255,0.2)_0%,transparent_36%,rgba(125,211,252,0.22)_78%,transparent_100%)]" />
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-12 px-6 py-16 sm:px-8 md:py-20 lg:grid-cols-[1fr_1.08fr] lg:items-center lg:px-12">
-          <div className="max-w-xl">
-            <Image
-              src="/Lark%20Design.svg"
-              alt="Lark Design"
-              width={186}
-              height={38}
-              className="mb-5 h-9 w-auto"
-              priority
+    <div
+      className={`relative min-h-screen text-stone-900 ${
+        playbookChromeFullscreen ? "bg-transparent" : "bg-white"
+      }`}
+    >
+      {splashVisible ? (
+        <div
+          className="fixed inset-0 z-[200] flex min-h-0 min-w-0 flex-col bg-white"
+          style={{ paddingTop: `${heroLayout.top}px` }}
+          aria-busy
+          aria-live="polite"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(lineRatio * 100)}
+        >
+          <span className="sr-only">加载中</span>
+          {/* 三线铺满视口（含顶栏背后），Logo 叠在上层 */}
+          <div className="pointer-events-none absolute inset-0 z-0 flex min-h-0 min-w-0 flex-col">
+            <PlaybookSplashPaths
+              curveRef={splashCurveRef}
+              hLineRef={splashHLineRef}
+              vLineRef={splashVLineRef}
+              lengths={splashStrokeLens}
+              measured={
+                splashStrokeLens[0] > 0 &&
+                splashStrokeLens[1] > 0 &&
+                splashStrokeLens[2] > 0
+              }
+              lineRatio={lineRatio}
+              sealPhase={sealPhase}
+              onStrokeTransitionEnd={onSplashProgressTransitionEnd}
             />
-            <h1 className="mt-4 text-5xl font-semibold leading-[1.06] tracking-tight sm:text-6xl">
-              Lark Growth
-              <br />
-              Design Playbook
-            </h1>
-            <p className="mt-6 max-w-md text-base leading-relaxed text-white/72">
-              Discover insights, experiments, and best practices for driving growth through design.
-            </p>
           </div>
-
-          {heroItems.length > 0 && activeHeroItem ? (
-            <div className="mx-auto w-full max-w-[620px]">
-              <div className="relative">
-                <div className="pointer-events-none absolute -left-14 top-12 h-[72%] w-[38%] rounded-2xl bg-white/18 blur-[1px]" />
-                <div className="pointer-events-none absolute -right-10 top-8 h-[76%] w-[32%] rounded-2xl bg-white/14 blur-[1px]" />
-
+          {/* 与全屏 Hero 顶栏同一 max-w-7xl + 栅格 + 中右占位，Logo 位置与加载后一致；白底用纯黑 Logo */}
+          <div className="relative z-[210] mx-auto w-full max-w-7xl shrink-0 bg-transparent">
+            <div
+              role="navigation"
+              aria-label="Playbook"
+              className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-6 pb-3 pt-6 sm:px-8 sm:pt-8 lg:px-12 lg:pt-10"
+            >
+              <div className="flex min-w-0 justify-start">
                 <Link
-                  href={`/article/${activeHeroItem.fields.Slug || activeHeroItem.record_id}`}
-                  className="relative block overflow-hidden rounded-lg bg-[linear-gradient(180deg,rgba(247,250,255,0.95)_0%,rgba(238,244,255,0.92)_100%)] shadow-[0_24px_48px_-30px_rgba(15,23,42,0.55)] transition-transform duration-500 hover:scale-[1.008]"
+                  href="/lark_growth_design_playbook"
+                  className="flex shrink-0 items-center outline-offset-4"
                 >
-                  <div className="aspect-[373/210] overflow-hidden rounded-t-lg border-b border-slate-200/70 bg-white/80">
-                    {getCoverImage(activeHeroItem) ? (
-                      <img
-                        src={getCoverImage(activeHeroItem)!}
-                        alt={activeHeroItem.fields.Title || ""}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div
-                        className="h-full w-full"
-                        style={{
-                          background: getGradientForItem(
-                            `${activeHeroItem.record_id}-${activeHeroItem.fields.Title || ""}`
-                          ),
-                        }}
-                      />
-                    )}
-                  </div>
-
-                  <div className="p-4 pt-3">
-                    <p className="text-xs text-stone-500">
-                      {[activeHeroItem.fields.Category, activeHeroItem.fields.Region?.[0]]
-                        .filter(Boolean)
-                        .map((value) => stripEmoji(String(value)))
-                        .join(" ｜ ")}
-                    </p>
-                    <h2 className="mt-2 line-clamp-2 text-2xl font-semibold leading-tight text-slate-900 sm:text-[2rem]">
-                      {activeHeroItem.fields.Title}
-                    </h2>
-                    <p className="mt-3 text-sm font-medium text-slate-700">阅读全文 &gt;</p>
-                  </div>
+                  <Image
+                    src="/Lark%20Design.svg"
+                    alt="Lark Design"
+                    width={186}
+                    height={38}
+                    className="h-9 w-auto brightness-0"
+                    priority
+                  />
                 </Link>
               </div>
-
-              <div className="mt-6 flex items-center justify-end gap-3">
+              <p
+                aria-hidden
+                className="pointer-events-none invisible max-w-[min(52vw,20rem)] truncate px-2 text-center text-xs font-semibold uppercase tracking-wide text-white/95 sm:max-w-[min(40vw,28rem)] sm:text-sm md:max-w-none md:overflow-visible md:whitespace-normal md:text-clip"
+              >
+                Lark Growth Design Playbook
+              </p>
+              <div className="flex min-w-0 justify-end">
                 <button
-                  onClick={goPrevHero}
-                  className="flex h-10 w-10 items-center justify-center rounded-full border border-white/35 bg-white/10 text-white transition-colors hover:bg-white/20"
-                  aria-label="Previous story"
+                  type="button"
+                  tabIndex={-1}
+                  aria-hidden
+                  className="invisible pointer-events-none shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white shadow-sm sm:px-4 sm:py-2 sm:text-sm"
                 >
-                  &lt;
-                </button>
-                <button
-                  onClick={goNextHero}
-                  className="flex h-10 w-10 items-center justify-center rounded-full border border-white/35 bg-white/10 text-white transition-colors hover:bg-white/20"
-                  aria-label="Next story"
-                >
-                  &gt;
+                  查看全部
                 </button>
               </div>
             </div>
-          ) : (
-            <div
-              aria-hidden="true"
-              className="mx-auto h-[520px] w-full max-w-[620px] opacity-0 pointer-events-none"
-            />
-          )}
+          </div>
         </div>
-      </header>
+      ) : null}
 
-      <main className="mx-auto max-w-7xl px-6 py-10 sm:px-8 lg:px-12">
-        <div
-          ref={filterBarRef}
-          className="sticky top-0 z-30 -mx-6 mb-10 bg-white/95 px-6 py-4 backdrop-blur sm:-mx-8 sm:px-8 lg:-mx-12 lg:px-12"
-        >
+      {showPage ? (
+      <div
+        className={`playbook-page-fade-in ${playbookChromeFullscreen ? "min-h-0 overflow-x-clip" : ""}`}
+      >
+      {playbookChromeFullscreen ? (
+        <>
+      <div
+        ref={heroScrollPortRef}
+        className="relative h-fit w-full shrink-0 isolate"
+      >
+        <div className="relative z-40 w-full" style={{ paddingTop: `${heroLayout.top}px` }}>
+      <header
+        className={`relative overflow-hidden text-stone-900 ${heroShellBgTransparent ? "bg-transparent" : "bg-white"}`}
+        style={{
+          position: "relative",
+          marginLeft: "auto",
+          marginRight: "auto",
+          width: `${heroLayout.outerW}px`,
+          height: `${heroLayout.outerH}px`,
+          borderRadius: `0 0 ${heroLayout.radius}px ${heroLayout.radius}px`,
+          maxWidth: "100%",
+          boxShadow:
+            heroSp > 0.04 && heroSp < 0.88
+              ? `0 22px 48px -18px rgba(15,23,42,${0.08 + 0.14 * heroSp})`
+              : undefined,
+        }}
+      >
+        {heroSlides.length > 0 ? (
+          <div
+            className="will-change-transform"
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: 0,
+              width: viewportSize.w,
+              height: viewportSize.h,
+              marginLeft: -viewportSize.w / 2,
+              transform: `scale(${heroLayout.viewportScale})`,
+              transformOrigin: "top center",
+            }}
+          >
+            <div className="relative h-full min-h-0 w-full">
+              <div className="absolute inset-0">
+                {activeHeroBgRecord ? (
+                  <div className="pointer-events-none absolute inset-0" aria-hidden>
+                    <div
+                      className="absolute inset-0 z-0 h-full w-full"
+                      style={{ background: getHeroParametricGradient(activeHeroBgSeed) }}
+                    />
+                    {!reduceHeroShaderMotion ? (
+                      <PlaybookHeroShaderBackground
+                        seed={activeHeroBgSeed}
+                        motionPaused={false}
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+
+              <PlaybookFullscreenPathTracers
+                active={showPage && playbookChromeFullscreen}
+                motionPaused={false}
+                reduceMotion={reduceHeroShaderMotion}
+              />
+
+              <div
+                className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
+                style={{
+                  opacity: heroChromeVisible ? 1 : 0,
+                  transitionDuration: `${heroChromeFadeMs}ms`,
+                }}
+              >
+                <PlaybookHeroSlidesFullscreenChrome
+                  heroSlides={heroSlides}
+                  activeHeroSlide={activeHeroSlide}
+                  heroSlidesKey={heroSlidesKey}
+                  stripEmojiFn={stripEmoji}
+                  setActiveHeroSlide={setActiveHeroSlide}
+                  onEnterCardMode={() => beginHeroSnap(1)}
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div
+            className="will-change-transform"
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: 0,
+              width: viewportSize.w,
+              height: viewportSize.h,
+              marginLeft: -viewportSize.w / 2,
+              transform: `scale(${heroLayout.viewportScale})`,
+              transformOrigin: "top center",
+            }}
+          >
+          <div className="relative flex h-full min-h-0 w-full flex-col text-white">
+            <div className="pointer-events-none absolute inset-0 z-0 h-full w-full" aria-hidden>
+              <div
+                className="absolute inset-0 h-full w-full"
+                style={{ background: getHeroParametricGradient("playbook-empty-hero") }}
+              />
+              {!reduceHeroShaderMotion ? (
+                <PlaybookHeroShaderBackground
+                  seed="playbook-empty-hero"
+                  motionPaused={false}
+                />
+              ) : null}
+            </div>
+            <PlaybookFullscreenPathTracers
+              active={showPage && playbookChromeFullscreen}
+              motionPaused={false}
+              reduceMotion={reduceHeroShaderMotion}
+            />
+            <div
+              className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
+              style={{
+                opacity: heroChromeVisible ? 1 : 0,
+                transitionDuration: `${heroChromeFadeMs}ms`,
+              }}
+            >
+              <PlaybookHeroEmptyFullscreenChrome onToggleLayout={toggleHeroLayout} />
+            </div>
+          </div>
+          </div>
+        )}
+      </header>
+        </div>
+      </div>
+
+      <main
+        className={`mx-auto max-w-7xl px-6 py-10 sm:px-8 sm:py-10 lg:px-8 ${
+          playbookChromeFullscreen
+            ? "pointer-events-none invisible m-0 max-h-0 min-h-0 overflow-hidden border-0 p-0 opacity-0"
+            : ""
+        }`}
+        aria-hidden={playbookChromeFullscreen}
+      ></main>
+        </>
+      ) : (
+        <div ref={heroScrollPortRef} className="relative w-full min-h-0">
+          <main
+            className="mx-auto max-w-7xl px-6 pb-10 pt-0 sm:px-8 sm:pb-10 lg:px-8"
+            aria-hidden={false}
+          >
+            <div className="relative z-40 w-full" style={{ paddingTop: `${heroLayout.top}px` }}>
+              <header
+                className={`relative overflow-hidden text-stone-900 ${heroShellBgTransparent ? "bg-transparent" : "bg-white"}`}
+                style={{
+                  position: "relative",
+                  marginLeft: "auto",
+                  marginRight: "auto",
+                  width: `${heroLayout.outerW}px`,
+                  height: `${heroLayout.outerH}px`,
+                  borderRadius: `0 0 ${heroLayout.radius}px ${heroLayout.radius}px`,
+                  maxWidth: "100%",
+                }}
+              >
+                {heroSlides.length > 0 ? (
+                  /**
+                   * 卡片态：header 高度为 outerH，勿再用「整视口高 + scale」全屏套路，否则正文被 overflow-hidden 裁掉。
+                   */
+                  <div className="relative h-full min-h-0 w-full overflow-hidden">
+                    <div className="absolute inset-0">
+                      {activeHeroBgRecord ? (
+                        <div className="pointer-events-none absolute inset-0" aria-hidden>
+                          <div
+                            className="absolute inset-0 z-0 h-full w-full"
+                            style={{ background: getHeroParametricGradient(activeHeroBgSeed) }}
+                          />
+                          {!reduceHeroShaderMotion ? (
+                            <PlaybookHeroShaderBackground seed={activeHeroBgSeed} motionPaused />
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div
+                      className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-none flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
+                      style={{
+                        opacity: heroChromeVisible ? 1 : 0,
+                        transitionDuration: `${heroChromeFadeMs}ms`,
+                      }}
+                    >
+                      <PlaybookHeroSlidesCardChrome
+                        heroSlides={heroSlides}
+                        activeHeroSlide={activeHeroSlide}
+                        stripEmojiFn={stripEmoji}
+                        setActiveHeroSlide={setActiveHeroSlide}
+                        onToggleLayout={toggleHeroLayout}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative h-full min-h-0 w-full overflow-hidden">
+                    <div className="pointer-events-none absolute inset-0 z-0 h-full w-full text-white" aria-hidden>
+                      <div
+                        className="absolute inset-0 h-full w-full"
+                        style={{ background: getHeroParametricGradient("playbook-empty-hero") }}
+                      />
+                      {!reduceHeroShaderMotion ? (
+                        <PlaybookHeroShaderBackground seed="playbook-empty-hero" motionPaused />
+                      ) : null}
+                    </div>
+                    <div
+                      className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-none flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
+                      style={{
+                        opacity: heroChromeVisible ? 1 : 0,
+                        transitionDuration: `${heroChromeFadeMs}ms`,
+                      }}
+                    >
+                      <PlaybookHeroEmptyCardChrome onToggleLayout={toggleHeroLayout} />
+                    </div>
+                  </div>
+                )}
+              </header>
+            </div>
+
+            <div
+              ref={filterBarRef}
+              className="sticky z-50 -mx-6 mb-12 bg-white/95 px-6 py-5 backdrop-blur sm:-mx-8 sm:px-8 sm:py-6 lg:mx-0 lg:px-0 lg:py-7"
+              style={{ top: 0 }}
+            >
           <div className="relative flex flex-wrap items-center justify-center gap-x-8 gap-y-3">
             {isFilterSticky && (
               <div className="absolute left-0 top-1/2 hidden -translate-y-1/2 sm:block">
@@ -291,7 +1392,7 @@ export default function PlaybookPage() {
             <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm">
               <button
                 onClick={() => setSelectedCategory(null)}
-                className={`text-sm transition-colors ${
+                className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
                   !selectedCategory
                     ? "font-semibold text-stone-900 underline underline-offset-4"
                     : "text-stone-600 hover:text-stone-900"
@@ -303,7 +1404,7 @@ export default function PlaybookPage() {
                 <button
                   key={category}
                   onClick={() => setSelectedCategory(category)}
-                  className={`text-sm transition-colors ${
+                  className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
                     selectedCategory === category
                       ? "font-semibold text-stone-900 underline underline-offset-4"
                       : "text-stone-600 hover:text-stone-900"
@@ -317,7 +1418,7 @@ export default function PlaybookPage() {
             <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm">
               <button
                 onClick={() => setSelectedRegion(null)}
-                className={`text-sm transition-colors ${
+                className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
                   !selectedRegion
                     ? "font-semibold text-stone-900 underline underline-offset-4"
                     : "text-stone-600 hover:text-stone-900"
@@ -329,7 +1430,7 @@ export default function PlaybookPage() {
                 <button
                   key={region}
                   onClick={() => setSelectedRegion(region)}
-                  className={`text-sm transition-colors ${
+                  className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
                     selectedRegion === region
                       ? "font-semibold text-stone-900 underline underline-offset-4"
                       : "text-stone-600 hover:text-stone-900"
@@ -343,73 +1444,82 @@ export default function PlaybookPage() {
         </div>
 
         {error && (
-          <div className="mb-8 rounded-xl border border-red-200 bg-red-50 p-4">
-            <p className="text-red-700">{error}</p>
+          <div className="mb-10 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {error}
           </div>
         )}
 
-        {loading && (
-          <div className="text-center py-12">
-            <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-stone-300 border-t-stone-700"></div>
-            <p className="mt-4 text-stone-600">Loading...</p>
-          </div>
-        )}
-
-        {!loading && !error && (
+        {!error && (
           <div>
-            <div className="grid grid-cols-1 gap-x-8 gap-y-10 md:grid-cols-2 lg:grid-cols-3">
-              {visibleItems.map((item) => (
-                <Link
-                  key={item.record_id}
-                  href={`/article/${item.fields.Slug || item.record_id}`}
-                  className="group block"
-                >
-                  {getCoverImage(item) ? (
-                    <div className="overflow-hidden rounded-lg bg-stone-100">
-                      <img
-                        src={getCoverImage(item)!}
-                        alt={item.fields.Title || ""}
-                        className="aspect-[373/210] w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
-                      />
-                    </div>
-                  ) : (
+            {visibleItems.length === 0 ? (
+              <div className="py-16 text-center">
+                <p className="text-lg text-stone-500">No items found for the selected filters.</p>
+              </div>
+            ) : (
+              <div
+                className={
+                  cardGridAwaitingReveal
+                    ? "pointer-events-none select-none opacity-0"
+                    : undefined
+                }
+                aria-hidden={cardGridAwaitingReveal}
+              >
+              <div
+                key={cardGridRevealEpoch}
+                className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 lg:gap-7"
+              >
+                {visibleItems.map((item, i) => (
+                  <Link
+                    key={`${item.record_id}-${selectedCategory ?? "c"}-${selectedRegion ?? "r"}`}
+                    href={`/article/${item.fields.Slug || item.record_id}`}
+                    className="playbook-card-enter group block rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-900"
+                    style={{
+                      animationDelay: `${Math.min(i, 24) * 64}ms`,
+                    }}
+                  >
                     <div
-                      className="aspect-[373/210] overflow-hidden rounded-lg"
+                      className="aspect-[4/3] w-full overflow-hidden rounded-xl transition-transform duration-500 ease-[cubic-bezier(0.33,1,0.68,1)] will-change-transform group-hover:scale-[1.02]"
                       style={{
-                        background: getGradientForItem(`${item.record_id}-${item.fields.Title || ""}`),
+                        background: getHeroParametricGradient(heroGradientSeedForRecord(item)),
                       }}
                     />
-                  )}
 
-                  <div className="pt-3">
-                    <h2 className="text-lg font-medium leading-snug text-stone-900 transition-colors group-hover:text-stone-700">
-                      {item.fields.Title}
-                    </h2>
-                    <p className="mt-2 text-xs text-stone-500">
-                      {[item.fields.Category, item.fields.Region?.[0]]
-                        .filter(Boolean)
-                        .map((value) => stripEmoji(String(value)))
-                        .join(" ｜ ")}
-                    </p>
-                  </div>
-                </Link>
-              ))}
-            </div>
+                    <div className="pt-3">
+                      <h2 className="text-base font-semibold leading-snug text-stone-900 transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] group-hover:text-stone-800">
+                        {item.fields.Title}
+                      </h2>
+                      <p className="mt-1.5 text-xs text-stone-500">
+                        {[item.fields.Category, item.fields.Region?.[0]]
+                          .filter(Boolean)
+                          .map((value) => stripEmoji(String(value)))
+                          .join(" ｜ ")}
+                      </p>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+              </div>
+            )}
           </div>
         )}
-
-        {!loading && !error && visibleItems.length === 0 && (
-          <div className="text-center py-12">
-            <p className="text-lg text-stone-500">No items found for the selected filters.</p>
-          </div>
-        )}
-      </main>
-      <footer className="mt-10 border-t border-stone-200">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-6 text-sm text-stone-500 sm:px-8 lg:px-12">
+          </main>
+        </div>
+      )}
+      <footer
+        className={`mt-10 border-t border-stone-200 ${
+          playbookChromeFullscreen
+            ? "pointer-events-none invisible m-0 max-h-0 min-h-0 overflow-hidden border-0 p-0 opacity-0"
+            : ""
+        }`}
+        aria-hidden={playbookChromeFullscreen}
+      >
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-6 text-sm text-stone-500 sm:px-8 lg:px-8">
           <p>© {new Date().getFullYear()} Lark Growth Design Playbook</p>
           <p>Built for growth stories and design insights.</p>
         </div>
       </footer>
+      </div>
+      ) : null}
     </div>
   );
 }

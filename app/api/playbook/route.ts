@@ -1,14 +1,12 @@
 import { getBaseRecords } from "@/lib/feishu/client";
-
-const APP_TOKEN = "B4K3bAYKTau24es6Dxdcq3FEnig";
-const TABLE_ID = "tblHalmUkZ8AZSgp";
+import { getPlaybookAppToken, getPlaybookTableId } from "@/lib/playbook-data-source";
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const slug = searchParams.get("slug");
 
-    const data = await getBaseRecords(APP_TOKEN, TABLE_ID);
+    const data = await getBaseRecords(getPlaybookAppToken(), getPlaybookTableId());
 
     if (!slug) {
       return Response.json({ ok: true, data });
