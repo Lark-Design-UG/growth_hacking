@@ -712,6 +712,8 @@ export default function PlaybookPage() {
   const [reduceHeroShaderMotion, setReduceHeroShaderMotion] = useState(false);
   /** Hero 几何 snap 进行中：暂停路径拖尾 / WebGL 以减轻 GPU 与主线程压力 */
   const [heroSnapBusy, setHeroSnapBusy] = useState(false);
+  /** 列表卡片 hover：仅该卡片 Shader 开启动效 */
+  const [hoveredPlaybookCardKey, setHoveredPlaybookCardKey] = useState<string | null>(null);
   const splashCurveRef = useRef<SVGPathElement | null>(null);
   const splashHLineRef = useRef<SVGLineElement | null>(null);
   const splashVLineRef = useRef<SVGLineElement | null>(null);
@@ -1468,14 +1470,19 @@ export default function PlaybookPage() {
                   ))}
                   {visibleItems.map((item, i) => {
                     const cardCoverSeed = heroGradientSeedForRecord(item);
+                    const cardGridKey = `${item.record_id}-${selectedCategory ?? "c"}-${selectedRegion ?? "r"}`;
                     return (
                     <Link
-                      key={`${item.record_id}-${selectedCategory ?? "c"}-${selectedRegion ?? "r"}`}
+                      key={cardGridKey}
                       href={`/article/${item.fields.Slug || item.record_id}`}
                       className="playbook-card-enter group relative block aspect-square overflow-hidden rounded-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-stone-400"
                       style={{
                         animationDelay: `${Math.min(i, 24) * 64}ms`,
                       }}
+                      onPointerEnter={() => setHoveredPlaybookCardKey(cardGridKey)}
+                      onPointerLeave={() =>
+                        setHoveredPlaybookCardKey((k) => (k === cardGridKey ? null : k))
+                      }
                     >
                       <div
                         className="pointer-events-none absolute inset-0 overflow-hidden transition-opacity duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] group-hover:opacity-95"
@@ -1488,7 +1495,11 @@ export default function PlaybookPage() {
                           }}
                         />
                         {!reduceHeroShaderMotion ? (
-                          <PlaybookDeferredShaderCover seed={cardCoverSeed} pixelDensity={1} />
+                          <PlaybookDeferredShaderCover
+                            seed={cardCoverSeed}
+                            pixelDensity={1}
+                            hoverActive={hoveredPlaybookCardKey === cardGridKey}
+                          />
                         ) : null}
                       </div>
                       <div className="absolute inset-x-0 bottom-0 z-10 p-3 sm:p-4">

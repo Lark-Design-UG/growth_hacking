@@ -10,6 +10,8 @@ type PlaybookDeferredShaderCoverProps = {
   pixelDensity?: number;
   /** 视口外预取距离，越大越早创建 WebGL（略增首屏外开销） */
   rootMargin?: string;
+  /** 为 true 时播放 Shader 时间轴（默认静态，用于卡片 hover） */
+  hoverActive?: boolean;
 };
 
 /**
@@ -20,6 +22,7 @@ export function PlaybookDeferredShaderCover({
   seed,
   pixelDensity = 1,
   rootMargin = "200px 0px",
+  hoverActive = false,
 }: PlaybookDeferredShaderCoverProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
@@ -72,7 +75,7 @@ export function PlaybookDeferredShaderCover({
       {visible ? (
         <PlaybookHeroShaderBackground
           seed={seed}
-          motionPaused
+          motionPaused={!hoverActive}
           pixelDensity={pixelDensity}
           skipRevealDelay
         />
