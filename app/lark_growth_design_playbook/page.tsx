@@ -7,6 +7,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type Dispatch,
@@ -14,6 +15,7 @@ import {
 } from "react";
 
 import { getHeroParametricGradient, heroGradientSeedForRecord } from "@/lib/hero-parametric-gradient";
+import { PlaybookDeferredShaderCover } from "@/app/lark_growth_design_playbook/playbook-deferred-shader-cover";
 import { PlaybookFullscreenPathTracers } from "@/app/lark_growth_design_playbook/playbook-fullscreen-path-tracers";
 import { PlaybookSplashPaths } from "@/app/lark_growth_design_playbook/playbook-splash-paths";
 import { getPlaybookAppToken, getPlaybookTableId } from "@/lib/playbook-data-source";
@@ -64,7 +66,8 @@ function easeInOutQuint(t: number): number {
   return x < 0.5 ? 16 * x * x * x * x * x : 1 - Math.pow(-2 * x + 2, 5) / 2;
 }
 
-const HERO_SNAP_MS = 880;
+/** 全屏 ↔ 卡片几何插值时长（略短 + RAF 节流可明显减轻卡顿） */
+const HERO_SNAP_MS = 640;
 /** 切换完成后新 UI 渐显时长（与渐隐时长 HERO_SNAP_MS 分离） */
 const HERO_CHROME_FADE_IN_MS = 520;
 
@@ -85,18 +88,11 @@ function readHeroSpVisual(anim: HeroSnapAnim, spRef: { current: number }, now: n
 const HERO_CARD_GAP_PX = 12;
 /** 卡片顶相对 Hero 外包层的 offset（px），与 `heroLayout.top` 一致；0 表示贴齐内容区顶边 */
 const HERO_LOGO_CLEARANCE_PX = 0;
-/** 与 Tailwind max-w-7xl 对齐（80rem 按 16px） */
-const HERO_MAX_CONTENT_PX = 80 * 16;
-
 /**
- * 与 `<main class="mx-auto max-w-7xl px-6 sm:px-8 lg:px-8">` 内容区同宽。
- * 全屏动画最后一帧仍用该宽度；切到卡片 DOM 后 header 受 `max-width:100%` 约束，若此处偏大则收尾会横向跳变。
+ * 卡片态 main 无左右 padding 时与视口同宽；全屏↔卡片动画收尾 outerW 与此一致。
  */
 function playbookMainContentInnerWidthPx(viewportW: number) {
-  const safeW = Math.max(320, viewportW);
-  const shell = Math.min(HERO_MAX_CONTENT_PX, safeW);
-  const padX = safeW >= 640 ? 32 : 24;
-  return Math.max(200, shell - 2 * padX);
+  return Math.max(320, viewportW);
 }
 
 /** 卡片态 Hero 高度：视口高度的 1/2（与 `computeHeroLayout` / 全屏↔卡片动画共用） */
@@ -208,7 +204,7 @@ function PlaybookHeroSlidesCardChrome({
       >
         <Link
           href="/lark_growth_design_playbook"
-          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-white/90"
+          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-stone-300/90"
         >
           <Image
             src="/Lark%20Design.svg"
@@ -225,7 +221,7 @@ function PlaybookHeroSlidesCardChrome({
         <button
           type="button"
           onClick={onToggleLayout}
-          className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-white/90 bg-white/10 text-white backdrop-blur-sm transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-white hover:bg-white/20"
+          className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-stone-200/80 bg-white/15 text-white transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-stone-100 hover:bg-white/25"
           aria-label="展开全屏"
         >
           <PlaybookCardFullscreenIcon className="size-[1.125rem]" />
@@ -249,15 +245,50 @@ function PlaybookHeroSlidesCardChrome({
             <h1 className="text-balance text-2xl font-semibold leading-[1.1] tracking-tight text-white sm:text-3xl md:text-4xl lg:text-5xl">
               {currentSlide.fields.Title || "Untitled"}
             </h1>
-            <Link
-              href={copyHref}
-              className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-900 transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98] sm:mt-6 sm:px-5 sm:py-2.5"
-            >
-              立即阅读
-              <span aria-hidden className="translate-y-px">
-                &gt;
-              </span>
-            </Link>
+            <div className="mt-5 flex flex-wrap items-center gap-3 sm:mt-6">
+              <Link
+                href={copyHref}
+                className="inline-flex items-center justify-center rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-900 transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98] sm:px-5 sm:py-2.5"
+              >
+                立即阅读
+              </Link>
+              {heroSlides.length > 1 ? (
+                <div className="flex items-center gap-2" role="group" aria-label="切换篇目">
+                  <button
+                    type="button"
+                    aria-label="上一篇，在第一篇时回到最后一篇"
+                    onClick={() => goHeroRing(-1)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-stone-200/80 bg-white/10 text-white transition-colors duration-200 ease-out hover:border-stone-100 hover:bg-white/20 motion-reduce:transition-none sm:h-10 sm:w-10"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" className="size-[18px] shrink-0 sm:size-5" aria-hidden>
+                      <path
+                        d="M7 14.5L12 9.5l5 5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="下一篇，在最后一篇时回到第一篇"
+                    onClick={() => goHeroRing(1)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-stone-200/80 bg-white/10 text-white transition-colors duration-200 ease-out hover:border-stone-100 hover:bg-white/20 motion-reduce:transition-none sm:h-10 sm:w-10"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" className="size-[18px] shrink-0 sm:size-5" aria-hidden>
+                      <path
+                        d="M7 9.5L12 14.5l5-5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -277,7 +308,7 @@ function PlaybookHeroSlidesCardChrome({
                     onClick={() => setActiveHeroSlide(i)}
                     className={`block rounded-full transition-[height,width,background-color] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
                       on
-                        ? "h-7 w-[5px] bg-white ring-1 ring-inset ring-white/40"
+                        ? "h-7 w-[5px] bg-white ring-1 ring-inset ring-stone-400/45"
                         : "h-2 w-2 bg-white/40 hover:bg-white/65"
                     }`}
                   />
@@ -286,45 +317,6 @@ function PlaybookHeroSlidesCardChrome({
             })}
           </ol>
         </nav>
-
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-3 z-40 flex flex-row items-center justify-center gap-3 sm:bottom-4"
-          role="group"
-          aria-label="切换篇目"
-        >
-          <button
-            type="button"
-            aria-label="上一篇，在第一篇时回到最后一篇"
-            onClick={() => goHeroRing(-1)}
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/90 bg-transparent text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none sm:h-11 sm:w-11"
-          >
-            <svg viewBox="0 0 24 24" fill="none" className="size-5 shrink-0 sm:size-[22px]" aria-hidden>
-              <path
-                d="M7 14.5L12 9.5l5 5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            aria-label="下一篇，在最后一篇时回到第一篇"
-            onClick={() => goHeroRing(1)}
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/90 bg-transparent text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none sm:h-11 sm:w-11"
-          >
-            <svg viewBox="0 0 24 24" fill="none" className="size-5 shrink-0 sm:size-[22px]" aria-hidden>
-              <path
-                d="M7 9.5L12 14.5l5-5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -471,7 +463,7 @@ function PlaybookHeroSlidesFullscreenChrome({
               alt="Lark Design"
               width={186}
               height={38}
-              className="h-9 w-auto brightness-0 invert drop-shadow-sm"
+              className="h-9 w-auto brightness-0 invert"
               priority
             />
           </Link>
@@ -483,7 +475,7 @@ function PlaybookHeroSlidesFullscreenChrome({
           <button
             type="button"
             onClick={onEnterCardMode}
-            className="shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/10 sm:px-4 sm:py-2 sm:text-sm"
+            className="shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/10 sm:px-4 sm:py-2 sm:text-sm"
           >
             查看全部
           </button>
@@ -521,18 +513,53 @@ function PlaybookHeroSlidesFullscreenChrome({
                 {copyMeta}
               </p>
             ) : null}
-            <h1 className="text-balance text-4xl font-semibold leading-[1.08] tracking-tight text-white drop-shadow-sm sm:text-5xl md:text-6xl lg:text-7xl">
+            <h1 className="text-balance text-4xl font-semibold leading-[1.08] tracking-tight text-white sm:text-5xl md:text-6xl lg:text-7xl">
               {currentSlide.fields.Title || "Untitled"}
             </h1>
-            <Link
-              href={copyHref}
-              className="mt-8 inline-flex items-center gap-1.5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-stone-900 shadow-sm transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98]"
-            >
-              阅读全文
-              <span aria-hidden className="translate-y-px">
-                &gt;
-              </span>
-            </Link>
+            <div className="mt-8 flex flex-wrap items-center gap-3">
+              <Link
+                href={copyHref}
+                className="inline-flex items-center justify-center rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-stone-900 transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98]"
+              >
+                阅读全文
+              </Link>
+              {heroSlides.length > 1 ? (
+                <div className="flex items-center gap-2" role="group" aria-label="切换篇目">
+                  <button
+                    type="button"
+                    aria-label="上一篇，在第一篇时回到最后一篇"
+                    onClick={() => goHeroRing(-1)}
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/90 bg-white/10 text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/20 motion-reduce:transition-none sm:h-11 sm:w-11"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" className="size-5 shrink-0 sm:size-[22px]" aria-hidden>
+                      <path
+                        d="M7 14.5L12 9.5l5 5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="下一篇，在最后一篇时回到第一篇"
+                    onClick={() => goHeroRing(1)}
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/90 bg-white/10 text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/20 motion-reduce:transition-none sm:h-11 sm:w-11"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" className="size-5 shrink-0 sm:size-[22px]" aria-hidden>
+                      <path
+                        d="M7 9.5L12 14.5l5-5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -550,9 +577,9 @@ function PlaybookHeroSlidesFullscreenChrome({
                     aria-label={`第 ${i + 1} 篇`}
                     aria-current={on ? "true" : undefined}
                     onClick={() => setActiveHeroSlide(i)}
-                    className={`block rounded-full transition-[height,width,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
+                    className={`block rounded-full transition-[height,width,background-color] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
                       on
-                        ? "h-7 w-[5px] bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.35)]"
+                        ? "h-7 w-[5px] bg-white ring-1 ring-inset ring-white/40"
                         : "h-2 w-2 bg-white/40 hover:bg-white/65"
                     }`}
                   />
@@ -561,59 +588,6 @@ function PlaybookHeroSlidesFullscreenChrome({
             })}
           </ol>
         </nav>
-
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-4 z-40 flex flex-row items-center justify-center gap-3 sm:bottom-5"
-          role="group"
-          aria-label="切换篇目"
-        >
-          <button
-            type="button"
-            aria-label="上一篇，在第一篇时回到最后一篇"
-            onClick={() => goHeroRing(-1)}
-            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-transparent text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none"
-          >
-            <svg
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              className="shrink-0"
-              aria-hidden
-            >
-              <path
-                d="M7 14.5L12 9.5l5 5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            aria-label="下一篇，在最后一篇时回到第一篇"
-            onClick={() => goHeroRing(1)}
-            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-transparent text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none"
-          >
-            <svg
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              className="shrink-0"
-              aria-hidden
-            >
-              <path
-                d="M7 9.5L12 14.5l5-5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -629,7 +603,7 @@ function PlaybookHeroEmptyCardChrome({ onToggleLayout }: { onToggleLayout: () =>
       >
         <Link
           href="/lark_growth_design_playbook"
-          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-white/90"
+          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-stone-300/90"
         >
           <Image
             src="/Lark%20Design.svg"
@@ -646,7 +620,7 @@ function PlaybookHeroEmptyCardChrome({ onToggleLayout }: { onToggleLayout: () =>
         <button
           type="button"
           onClick={onToggleLayout}
-          className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-white/90 bg-white/10 text-white backdrop-blur-sm transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-white hover:bg-white/20"
+          className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-stone-200/80 bg-white/15 text-white transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-stone-100 hover:bg-white/25"
           aria-label="展开全屏"
         >
           <PlaybookCardFullscreenIcon className="size-[1.125rem]" />
@@ -680,7 +654,7 @@ function PlaybookHeroEmptyFullscreenChrome({ onToggleLayout }: { onToggleLayout:
         <button
           type="button"
           onClick={onToggleLayout}
-          className="shrink-0 rounded-full border border-stone-900/15 bg-white/85 px-3 py-1.5 text-xs font-semibold text-stone-800 shadow-sm backdrop-blur-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] hover:bg-white sm:text-sm"
+          className="shrink-0 rounded-full border border-stone-900/15 bg-white px-3 py-1.5 text-xs font-semibold text-stone-800 transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] hover:bg-stone-50 sm:text-sm"
           aria-pressed={false}
           aria-label="收起为卡片"
         >
@@ -736,6 +710,8 @@ export default function PlaybookPage() {
   const heroMotionReduceRef = useRef(false);
   /** WebGL 背景在 prefers-reduced-motion 时关闭，仅保留 CSS 渐变 */
   const [reduceHeroShaderMotion, setReduceHeroShaderMotion] = useState(false);
+  /** Hero 几何 snap 进行中：暂停路径拖尾 / WebGL 以减轻 GPU 与主线程压力 */
+  const [heroSnapBusy, setHeroSnapBusy] = useState(false);
   const splashCurveRef = useRef<SVGPathElement | null>(null);
   const splashHLineRef = useRef<SVGLineElement | null>(null);
   const splashVLineRef = useRef<SVGLineElement | null>(null);
@@ -756,6 +732,7 @@ export default function PlaybookPage() {
     if (heroMotionReduceRef.current) {
       const a = heroAnimRef.current;
       a.active = false;
+      setHeroSnapBusy(false);
       heroSpDisplayRef.current = to;
       setHeroSpDisplay(to);
       setHeroWantsFullLayout(to < 0.5);
@@ -767,6 +744,7 @@ export default function PlaybookPage() {
       return;
     }
     if (Math.abs(visual - to) < 0.004) return;
+    setHeroSnapBusy(true);
     setHeroWantsFullLayout(to < 0.5);
     if (to === 0) setCardGridAwaitingReveal(false);
     if (to === 1) setCardGridAwaitingReveal(true);
@@ -918,16 +896,6 @@ export default function PlaybookPage() {
     return Array.from(regions);
   };
 
-  const filteredItems = () => {
-    if (!data?.items) return [];
-    return data.items.filter((item) => {
-      const categoryMatch = !selectedCategory || item.fields.Category === selectedCategory;
-      const regionMatch = !selectedRegion || 
-        (item.fields.Region && item.fields.Region.includes(selectedRegion));
-      return categoryMatch && regionMatch;
-    });
-  };
-
   const stripEmoji = (value: string) =>
     value
       .replace(/\p{Extended_Pictographic}/gu, "")
@@ -935,7 +903,15 @@ export default function PlaybookPage() {
       .replace(/\s+/g, " ")
       .trim();
 
-  const visibleItems = filteredItems();
+  const visibleItems = useMemo(() => {
+    if (!data?.items) return [];
+    return data.items.filter((item) => {
+      const categoryMatch = !selectedCategory || item.fields.Category === selectedCategory;
+      const regionMatch =
+        !selectedRegion || (item.fields.Region && item.fields.Region.includes(selectedRegion));
+      return categoryMatch && regionMatch;
+    });
+  }, [data?.items, selectedCategory, selectedRegion]);
   const HERO_LATEST_COUNT = 5;
   const heroSlides = latestRecordsForHero(data?.items ?? [], HERO_LATEST_COUNT);
   const heroSlidesKey = heroSlides.map((h) => h.record_id).join(",");
@@ -995,6 +971,8 @@ export default function PlaybookPage() {
   /** 全屏 ↔ 卡片：临界值触发后缓动到目标（时长见 HERO_SNAP_MS） */
   useEffect(() => {
     let raf = 0;
+    /** 每 2 帧才 setHeroSpDisplay，避免 ~60 次/秒整页 reconcile；收尾帧必刷新 */
+    let snapFrame = 0;
     const loop = () => {
       const a = heroAnimRef.current;
       if (a.active) {
@@ -1003,17 +981,23 @@ export default function PlaybookPage() {
         const p = easeInOutQuint(u);
         const v = a.from + (a.to - a.from) * p;
         heroSpDisplayRef.current = v;
-        setHeroSpDisplay(v);
+        snapFrame += 1;
+        /** 奇数帧更新 React，偶数帧跳过（约 30fps 布局刷新，首帧必更新） */
+        if ((snapFrame & 1) === 1 || u >= 1) {
+          setHeroSpDisplay(v);
+        }
         if (u >= 1) {
+          snapFrame = 0;
           a.active = false;
           heroSpDisplayRef.current = a.to;
           setHeroSpDisplay(a.to);
+          setHeroSnapBusy(false);
           const nextSurface: HeroChromeSurface = a.to === 1 ? "card" : "fullscreen";
           setHeroChromeSurface(nextSurface);
           setHeroChromeFadeMs(HERO_CHROME_FADE_IN_MS);
           setHeroChromeVisible(false);
           requestAnimationFrame(() => {
-            requestAnimationFrame(() => setHeroChromeVisible(true));
+            setHeroChromeVisible(true);
           });
           if (a.to === 1) {
             setCardGridAwaitingReveal(false);
@@ -1143,7 +1127,7 @@ export default function PlaybookPage() {
                   type="button"
                   tabIndex={-1}
                   aria-hidden
-                  className="invisible pointer-events-none shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white shadow-sm sm:px-4 sm:py-2 sm:text-sm"
+                  className="invisible pointer-events-none shrink-0 rounded-full border border-stone-200 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white sm:px-4 sm:py-2 sm:text-sm"
                 >
                   查看全部
                 </button>
@@ -1205,7 +1189,7 @@ export default function PlaybookPage() {
                     {!reduceHeroShaderMotion ? (
                       <PlaybookHeroShaderBackground
                         seed={activeHeroBgSeed}
-                        motionPaused={false}
+                        motionPaused={heroSnapBusy}
                       />
                     ) : null}
                   </div>
@@ -1214,7 +1198,7 @@ export default function PlaybookPage() {
 
               <PlaybookFullscreenPathTracers
                 active={showPage && playbookChromeFullscreen}
-                motionPaused={false}
+                motionPaused={heroSnapBusy}
                 reduceMotion={reduceHeroShaderMotion}
               />
 
@@ -1259,13 +1243,13 @@ export default function PlaybookPage() {
               {!reduceHeroShaderMotion ? (
                 <PlaybookHeroShaderBackground
                   seed="playbook-empty-hero"
-                  motionPaused={false}
+                  motionPaused={heroSnapBusy}
                 />
               ) : null}
             </div>
             <PlaybookFullscreenPathTracers
               active={showPage && playbookChromeFullscreen}
-              motionPaused={false}
+              motionPaused={heroSnapBusy}
               reduceMotion={reduceHeroShaderMotion}
             />
             <div
@@ -1296,7 +1280,7 @@ export default function PlaybookPage() {
       ) : (
         <div ref={heroScrollPortRef} className="relative w-full min-h-0">
           <main
-            className="mx-auto max-w-7xl px-6 pb-10 pt-0 sm:px-8 sm:pb-10 lg:px-8"
+            className="w-full max-w-none px-0 pb-0 pt-0"
             aria-hidden={false}
           >
             <div className="relative z-40 w-full" style={{ paddingTop: `${heroLayout.top}px` }}>
@@ -1308,7 +1292,7 @@ export default function PlaybookPage() {
                   marginRight: "auto",
                   width: `${heroLayout.outerW}px`,
                   height: `${heroLayout.outerH}px`,
-                  borderRadius: `0 0 ${heroLayout.radius}px ${heroLayout.radius}px`,
+                  borderRadius: 0,
                   maxWidth: "100%",
                 }}
               >
@@ -1374,7 +1358,7 @@ export default function PlaybookPage() {
 
             <div
               ref={filterBarRef}
-              className="sticky z-50 -mx-6 mb-12 bg-white/95 px-6 py-5 backdrop-blur sm:-mx-8 sm:px-8 sm:py-6 lg:mx-0 lg:px-0 lg:py-7"
+              className="sticky z-50 -mx-6 mb-0 bg-white/95 px-6 py-5 backdrop-blur sm:-mx-8 sm:px-8 sm:py-6 lg:mx-0 lg:px-0 lg:py-7"
               style={{ top: 0 }}
             >
           <div className="relative flex flex-wrap items-center justify-center gap-x-8 gap-y-3">
@@ -1444,7 +1428,7 @@ export default function PlaybookPage() {
         </div>
 
         {error && (
-          <div className="mb-10 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <div className="mb-0 rounded-lg border border-stone-300 bg-red-50 px-4 py-3 text-sm text-red-800">
             {error}
           </div>
         )}
@@ -1464,39 +1448,64 @@ export default function PlaybookPage() {
                 }
                 aria-hidden={cardGridAwaitingReveal}
               >
-              <div
-                key={cardGridRevealEpoch}
-                className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 lg:gap-7"
-              >
-                {visibleItems.map((item, i) => (
-                  <Link
-                    key={`${item.record_id}-${selectedCategory ?? "c"}-${selectedRegion ?? "r"}`}
-                    href={`/article/${item.fields.Slug || item.record_id}`}
-                    className="playbook-card-enter group block rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-900"
-                    style={{
-                      animationDelay: `${Math.min(i, 24) * 64}ms`,
-                    }}
-                  >
+              <div className="border border-stone-200">
+                <div
+                  key={cardGridRevealEpoch}
+                  className="grid grid-cols-1 gap-px bg-stone-200 sm:grid-cols-2 lg:grid-cols-4"
+                >
+                  {Array.from({
+                    length: (4 - (visibleItems.length % 4)) % 4,
+                  }).map((_, padI) => (
                     <div
-                      className="aspect-[4/3] w-full overflow-hidden rounded-xl transition-transform duration-500 ease-[cubic-bezier(0.33,1,0.68,1)] will-change-transform group-hover:scale-[1.02]"
-                      style={{
-                        background: getHeroParametricGradient(heroGradientSeedForRecord(item)),
-                      }}
-                    />
-
-                    <div className="pt-3">
-                      <h2 className="text-base font-semibold leading-snug text-stone-900 transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] group-hover:text-stone-800">
-                        {item.fields.Title}
-                      </h2>
-                      <p className="mt-1.5 text-xs text-stone-500">
-                        {[item.fields.Category, item.fields.Region?.[0]]
-                          .filter(Boolean)
-                          .map((value) => stripEmoji(String(value)))
-                          .join(" ｜ ")}
+                      key={`grid-row-pad-${padI}`}
+                      aria-hidden
+                      className="hidden aspect-square bg-white p-4 lg:flex lg:flex-col lg:items-center lg:justify-center"
+                    >
+                      <p className="max-w-[11rem] text-balance text-center text-[11px] font-medium uppercase leading-snug tracking-wide text-stone-400 sm:text-xs">
+                        Reserved for the next growth story.
                       </p>
                     </div>
-                  </Link>
-                ))}
+                  ))}
+                  {visibleItems.map((item, i) => {
+                    const cardCoverSeed = heroGradientSeedForRecord(item);
+                    return (
+                    <Link
+                      key={`${item.record_id}-${selectedCategory ?? "c"}-${selectedRegion ?? "r"}`}
+                      href={`/article/${item.fields.Slug || item.record_id}`}
+                      className="playbook-card-enter group relative block aspect-square overflow-hidden rounded-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-stone-400"
+                      style={{
+                        animationDelay: `${Math.min(i, 24) * 64}ms`,
+                      }}
+                    >
+                      <div
+                        className="pointer-events-none absolute inset-0 overflow-hidden transition-opacity duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] group-hover:opacity-95"
+                        aria-hidden
+                      >
+                        <div
+                          className="absolute inset-0 z-0 h-full w-full"
+                          style={{
+                            background: getHeroParametricGradient(cardCoverSeed),
+                          }}
+                        />
+                        {!reduceHeroShaderMotion ? (
+                          <PlaybookDeferredShaderCover seed={cardCoverSeed} pixelDensity={1} />
+                        ) : null}
+                      </div>
+                      <div className="absolute inset-x-0 bottom-0 z-10 p-3 sm:p-4">
+                        <h2 className="text-sm font-semibold leading-snug text-white transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] group-hover:text-white sm:text-base">
+                          {item.fields.Title}
+                        </h2>
+                        <p className="mt-1.5 text-xs text-white">
+                          {[item.fields.Category, item.fields.Region?.[0]]
+                            .filter(Boolean)
+                            .map((value) => stripEmoji(String(value)))
+                            .join(" ｜ ")}
+                        </p>
+                      </div>
+                    </Link>
+                    );
+                  })}
+                </div>
               </div>
               </div>
             )}
@@ -1506,7 +1515,7 @@ export default function PlaybookPage() {
         </div>
       )}
       <footer
-        className={`mt-10 border-t border-stone-200 ${
+        className={`mt-0 border-t border-stone-200 ${
           playbookChromeFullscreen
             ? "pointer-events-none invisible m-0 max-h-0 min-h-0 overflow-hidden border-0 p-0 opacity-0"
             : ""

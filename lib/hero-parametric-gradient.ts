@@ -55,18 +55,72 @@ export function heroShaderHexColorsFromSeed(seed: string): {
   const hue2 = (baseHue + step1) % 360;
   const hue3 = (baseHue + step2) % 360;
 
-  const satBase = 48 + pick(h, 18, 17);
-  const sat2 = Math.min(68, satBase + 6 + pick(h, 24, 8));
-  const sat3 = Math.max(42, satBase - pick(h, 28, 10));
+  /** 饱和略封顶，避免高明度仍显「闷」 */
+  const satBase = Math.min(62, 48 + pick(h, 18, 17));
+  const sat2 = Math.min(64, satBase + 4 + pick(h, 24, 8));
+  const sat3 = Math.max(40, Math.min(58, satBase - pick(h, 28, 10)));
 
-  const l1 = 88 + pick(h, 4, 8);
-  const l2 = 82 + pick(h, 10, 10);
-  const l3 = 90 + pick(h, 14, 6);
+  /** 三色明度均抬高下限，规避过深底（尤其 color2） */
+  const l1 = 90 + pick(h, 4, 6);
+  const l2 = 84 + pick(h, 10, 8);
+  const l3 = 91 + pick(h, 14, 5);
 
   return {
     color1: hslToHex(hue1, satBase, l1),
     color2: hslToHex(hue2, sat2, l2),
     color3: hslToHex(hue3, sat3, l3),
+  };
+}
+
+/** 0..1 浮点，与色相哈希解耦，专用于 waterPlane 形态差异 */
+function f01(h: number, shift: number): number {
+  return ((h >>> shift) & 4095) / 4095;
+}
+
+/**
+ * Shader waterPlane：由 seed 确定性偏移强度/频率/相位相关项，静态帧也有明显差异。
+ * 与 {@link heroShaderHexColorsFromSeed} 独立派生，避免与配色强相关。
+ */
+export function heroShaderWaveParamsFromSeed(seed: string): {
+  uSpeed: number;
+  uStrength: number;
+  uDensity: number;
+  uFrequency: number;
+  uAmplitude: number;
+  cDistance: number;
+  cPolarAngle: number;
+  cAzimuthAngle: number;
+  brightness: number;
+  grainBlending: number;
+} {
+  const hA = hash32(`${seed}\u200cwaterPlane`);
+  const hB = hash32(`${seed}\u200cwaveform`);
+
+  const uStrength = 2.05 + f01(hA, 0) * 1.95;
+  const uDensity = 0.72 + f01(hA, 8) * 0.78;
+  const uFrequency = 2.35 + f01(hA, 16) * 4.15;
+  const uAmplitude = f01(hA, 24) * 0.32;
+  const uSpeed = 0.14 + f01(hB, 0) * 0.38;
+
+  const cDistance = Math.round(20 + f01(hB, 8) * 36);
+  const cPolarAngle = Math.round(72 + f01(hB, 16) * 48);
+  const cAzimuthAngle = Math.round(18 + f01(hB, 24) * 78);
+
+  /** 整体提亮下限，减少 waterPlane 在静态帧上过暗 */
+  const brightness = 0.91 + f01(hB, 4) * 0.13;
+  const grainBlending = 0.28 + f01(hA, 4) * 0.38;
+
+  return {
+    uSpeed,
+    uStrength,
+    uDensity,
+    uFrequency,
+    uAmplitude,
+    cDistance,
+    cPolarAngle,
+    cAzimuthAngle,
+    brightness,
+    grainBlending,
   };
 }
 
@@ -80,13 +134,14 @@ export function getHeroParametricGradient(seed: string): string {
   const hueB = (baseHue + step1) % 360;
   const hueC = (baseHue + step2) % 360;
 
-  const sat = 48 + pick(h, 18, 17);
-  const sat2 = Math.min(68, sat + 6 + pick(h, 24, 8));
-  const sat3 = Math.max(42, sat - pick(h, 28, 10));
+  const sat = Math.min(62, 48 + pick(h, 18, 17));
+  const sat2 = Math.min(64, sat + 4 + pick(h, 24, 8));
+  const sat3 = Math.max(40, Math.min(58, sat - pick(h, 28, 10)));
 
-  const ligDeep = 72 + pick(h, 4, 10);
-  const ligMid = 80 + pick(h, 10, 8);
-  const ligGlow = 88 + pick(h, 14, 6);
+  /** 线性渐变「深」色停点抬高，避免大面积低于 ~78% 明度 */
+  const ligDeep = 78 + pick(h, 4, 7);
+  const ligMid = 83 + pick(h, 10, 7);
+  const ligGlow = 89 + pick(h, 14, 5);
   const angle = pick(h, 4, 360);
 
   const rx = 18 + pick(h, 10, 64);

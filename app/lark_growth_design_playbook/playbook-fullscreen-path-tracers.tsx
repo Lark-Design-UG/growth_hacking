@@ -332,10 +332,6 @@ export function PlaybookFullscreenPathTracers({
         <span
           ref={numberRef}
           className="font-mono text-[11px] tabular-nums tracking-[0.2em] text-white/85 sm:text-xs"
-          style={{
-            textShadow:
-              "0 0 12px rgba(255,255,255,0.45), 0 0 28px rgba(255,255,255,0.2)",
-          }}
         >
           000
         </span>

@@ -1422,7 +1422,7 @@ export default function ArticlePage() {
         <div
           className={`fixed inset-x-0 top-0 z-[70] border-b bg-white transition-[opacity,transform] duration-200 ${
             titleStuck
-              ? "translate-y-0 opacity-100 border-gray-200 shadow-[0_1px_0_0_rgba(0,0,0,0.06)]"
+              ? "translate-y-0 opacity-100 border-gray-200"
               : "pointer-events-none -translate-y-full opacity-0 border-transparent"
           }`}
         >
@@ -1485,7 +1485,7 @@ export default function ArticlePage() {
             <div className="mx-auto flex w-full max-w-[1120px] items-center justify-between py-4">
               <Link
                 href="/lark_growth_design_playbook"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/70 bg-white/90 text-gray-700 shadow-sm backdrop-blur transition hover:bg-white"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/70 bg-white/90 text-gray-700 backdrop-blur transition hover:bg-white"
               >
                 <svg
                   aria-hidden="true"
@@ -1508,7 +1508,7 @@ export default function ArticlePage() {
                   rel="noreferrer"
                   aria-label="打开原始飞书文档"
                   title="打开原始飞书文档"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/70 bg-white/90 text-gray-700 shadow-sm backdrop-blur transition hover:bg-white"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/70 bg-white/90 text-gray-700 backdrop-blur transition hover:bg-white"
                 >
                   <svg
                     viewBox="0 0 24 24"
