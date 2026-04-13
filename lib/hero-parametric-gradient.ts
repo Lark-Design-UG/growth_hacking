@@ -1,5 +1,11 @@
 /**
- * Hero 全屏背景：由稳定 seed 生成的参数化渐变（确定性、可缓存）。
+ * Hero / Playbook 卡片底图：由**稳定字符串 seed** 经 `hash32` 确定性推出色相、饱和度、椭圆位置等，
+ * 再拼成 CSS `background-image`（多层 radial + linear）或供 WebGL 取色（{@link heroShaderHexColorsFromSeed}）。
+ *
+ * **Playbook 多维表格**：列表与详情应通过 {@link heroGradientSeedForRecord} 生成 seed——
+ * **优先使用表格「Slug」列**（字段名常见为 `Slug` / `slug` / `SLUG`）的文本作为**主种子**；
+ * 无 Slug 时回退到 `Title`，再回退 `untitled`，并与 `record_id` 组合以保证行级稳定与冲突区分。
+ *
  * 后续可改为请求独立接口（例如 `/api/hero-gradient?seed=`）并在此封装替换实现。
  */
 function hash32(seed: string): number {
@@ -15,12 +21,35 @@ function pick(h: number, shift: number, mod: number): number {
   return Math.floor((h >> shift) % mod);
 }
 
+/** 多维表格 Slug 列：兼容 API 返回的字段名大小写（与渐变 seed 同源） */
+export function playbookSlugFromFields(fields: Record<string, unknown>): string {
+  for (const k of ["Slug", "slug", "SLUG"] as const) {
+    const v = fields[k];
+    if (typeof v === "string") {
+      const t = v.trim();
+      if (t.length > 0) return t;
+    }
+  }
+  return "";
+}
+
+/**
+ * Playbook 单行记录 → 喂给 {@link getHeroParametricGradient} / Shader 的 seed 字符串。
+ *
+ * - **有 Slug**：`「slug」|record_id` —— 渐变主要由 **表格 Slug 字段**决定；末尾拼 `record_id` 防止同 Slug 多行时完全同色。
+ * - **无 Slug**：`record_id|「title 或 untitled」` —— 与仅按标题区分时的稳定回退一致。
+ */
 export function heroGradientSeedForRecord(record: {
   record_id: string;
-  fields: { Slug?: string; Title?: string };
+  fields: { Slug?: string; slug?: string; SLUG?: string; Title?: string; [key: string]: unknown };
 }): string {
-  const slug = record.fields.Slug?.trim();
-  return slug || `${record.record_id}-${record.fields.Title || ""}`;
+  const slug = playbookSlugFromFields(record.fields);
+  if (slug) return `${slug}|${record.record_id}`;
+
+  const titleRaw = record.fields.Title;
+  const title = typeof titleRaw === "string" ? titleRaw.trim() : "";
+  const label = title || "untitled";
+  return `${record.record_id}|${label}`;
 }
 
 function hslToHex(h: number, s: number, l: number): string {
@@ -40,7 +69,7 @@ function hslToHex(h: number, s: number, l: number): string {
 
 /**
  * Shader 专用：邻近色（色相间隔适中，避免贴太紧）+ 中饱和、高明度。
- * 与 {@link getHeroParametricGradient} 使用同一套色相逻辑，便于与 CSS 底图衔接。
+ * 与 {@link getHeroParametricGradient} 使用同一套色相逻辑（CSS 渐变函数仍可用于其它场景）。
  */
 export function heroShaderHexColorsFromSeed(seed: string): {
   color1: string;
@@ -70,6 +99,10 @@ export function heroShaderHexColorsFromSeed(seed: string): {
   };
 }
 
+/**
+ * 将任意 **稳定 seed**（如 {@link heroGradientSeedForRecord} 返回值）转为可写进 `style.background` 的多层渐变。
+ * 内部：`hash32(seed)` → 从 32 位哈希按位取模得到色相步进、饱和、明度、椭圆中心百分比与线性角度。
+ */
 export function getHeroParametricGradient(seed: string): string {
   const h = hash32(seed);
 

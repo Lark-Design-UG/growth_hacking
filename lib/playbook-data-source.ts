@@ -32,3 +32,13 @@ export function getPlaybookViewId(): string | undefined {
   const v = process.env.NEXT_PUBLIC_PLAYBOOK_DEBUG_VIEW_ID?.trim();
   return v || undefined;
 }
+
+/**
+ * 列表卡片是否绘制多维表 Cover 附件图。
+ * 设 `NEXT_PUBLIC_PLAYBOOK_SHOW_COVER=false` 或 `0` 关闭；未设置或其它值视为开启。
+ */
+export function isPlaybookCoverImageEnabled(): boolean {
+  const v = process.env.NEXT_PUBLIC_PLAYBOOK_SHOW_COVER;
+  if (v === "false" || v === "0") return false;
+  return true;
+}

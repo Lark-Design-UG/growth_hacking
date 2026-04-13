@@ -13,7 +13,12 @@ import {
   type SetStateAction,
 } from "react";
 
-import { getHeroParametricGradient, heroGradientSeedForRecord } from "@/lib/hero-parametric-gradient";
+import { heroGradientSeedForRecord } from "@/lib/hero-parametric-gradient";
+import {
+  coverAttachmentUrlFromFields,
+  motionAttachmentUrlFromFields,
+  PlaybookCardCoverMedia,
+} from "@/app/lark_growth_design_playbook/playbook-card-cover-media";
 import { PlaybookFullscreenPathTracers } from "@/app/lark_growth_design_playbook/playbook-fullscreen-path-tracers";
 import { PlaybookSplashPaths } from "@/app/lark_growth_design_playbook/playbook-splash-paths";
 import { getPlaybookAppToken, getPlaybookTableId } from "@/lib/playbook-data-source";
@@ -39,11 +44,22 @@ type BaseRecord = {
       type?: string;
       size?: number;
     }>;
+    /** 附件：webm 封面，列表 hover 播放 */
+    Motion?: Array<{
+      file_token?: string;
+      url?: string;
+      tmp_url?: string;
+      name?: string;
+      type?: string;
+      size?: number;
+    }>;
     Docs?: {
       link: string;
       text: string;
     };
+    /** 文章路径与渐变种子主键；API 也可能返回小写字段名 `slug` */
     Slug?: string;
+    slug?: string;
     Status?: string;
     [key: string]: any;
   };
@@ -208,7 +224,7 @@ function PlaybookHeroSlidesCardChrome({
       >
         <Link
           href="/lark_growth_design_playbook"
-          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-white/90"
+          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white/90"
         >
           <Image
             src="/Lark%20Design.svg"
@@ -277,7 +293,7 @@ function PlaybookHeroSlidesCardChrome({
                     onClick={() => setActiveHeroSlide(i)}
                     className={`block rounded-full transition-[height,width,background-color] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
                       on
-                        ? "h-7 w-[5px] bg-white ring-1 ring-inset ring-white/40"
+                        ? "h-7 w-[5px] border border-white/40 bg-white"
                         : "h-2 w-2 bg-white/40 hover:bg-white/65"
                     }`}
                   />
@@ -471,7 +487,7 @@ function PlaybookHeroSlidesFullscreenChrome({
               alt="Lark Design"
               width={186}
               height={38}
-              className="h-9 w-auto brightness-0 invert drop-shadow-sm"
+              className="h-9 w-auto brightness-0 invert"
               priority
             />
           </Link>
@@ -483,7 +499,7 @@ function PlaybookHeroSlidesFullscreenChrome({
           <button
             type="button"
             onClick={onEnterCardMode}
-            className="shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/10 sm:px-4 sm:py-2 sm:text-sm"
+            className="shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/10 sm:px-4 sm:py-2 sm:text-sm"
           >
             查看全部
           </button>
@@ -521,12 +537,12 @@ function PlaybookHeroSlidesFullscreenChrome({
                 {copyMeta}
               </p>
             ) : null}
-            <h1 className="text-balance text-4xl font-semibold leading-[1.08] tracking-tight text-white drop-shadow-sm sm:text-5xl md:text-6xl lg:text-7xl">
+            <h1 className="text-balance text-4xl font-semibold leading-[1.08] tracking-tight text-white sm:text-5xl md:text-6xl lg:text-7xl">
               {currentSlide.fields.Title || "Untitled"}
             </h1>
             <Link
               href={copyHref}
-              className="mt-8 inline-flex items-center gap-1.5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-stone-900 shadow-sm transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98]"
+              className="mt-8 inline-flex items-center gap-1.5 rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-stone-900 transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98]"
             >
               阅读全文
               <span aria-hidden className="translate-y-px">
@@ -550,9 +566,9 @@ function PlaybookHeroSlidesFullscreenChrome({
                     aria-label={`第 ${i + 1} 篇`}
                     aria-current={on ? "true" : undefined}
                     onClick={() => setActiveHeroSlide(i)}
-                    className={`block rounded-full transition-[height,width,background-color,box-shadow] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
+                    className={`block rounded-full transition-[height,width,background-color] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
                       on
-                        ? "h-7 w-[5px] bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.35)]"
+                        ? "h-7 w-[5px] border border-white/35 bg-white"
                         : "h-2 w-2 bg-white/40 hover:bg-white/65"
                     }`}
                   />
@@ -571,7 +587,7 @@ function PlaybookHeroSlidesFullscreenChrome({
             type="button"
             aria-label="上一篇，在第一篇时回到最后一篇"
             onClick={() => goHeroRing(-1)}
-            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-transparent text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none"
+            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-transparent text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none"
           >
             <svg
               width="22"
@@ -594,7 +610,7 @@ function PlaybookHeroSlidesFullscreenChrome({
             type="button"
             aria-label="下一篇，在最后一篇时回到第一篇"
             onClick={() => goHeroRing(1)}
-            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-transparent text-white shadow-sm transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none"
+            className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-full border border-white/90 bg-transparent text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none"
           >
             <svg
               width="22"
@@ -629,7 +645,7 @@ function PlaybookHeroEmptyCardChrome({ onToggleLayout }: { onToggleLayout: () =>
       >
         <Link
           href="/lark_growth_design_playbook"
-          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-white/90"
+          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white/90"
         >
           <Image
             src="/Lark%20Design.svg"
@@ -680,7 +696,7 @@ function PlaybookHeroEmptyFullscreenChrome({ onToggleLayout }: { onToggleLayout:
         <button
           type="button"
           onClick={onToggleLayout}
-          className="shrink-0 rounded-full border border-stone-900/15 bg-white/85 px-3 py-1.5 text-xs font-semibold text-stone-800 shadow-sm backdrop-blur-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] hover:bg-white sm:text-sm"
+          className="shrink-0 rounded-full border border-stone-900/15 bg-white/85 px-3 py-1.5 text-xs font-semibold text-stone-800 backdrop-blur-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] hover:bg-white sm:text-sm"
           aria-pressed={false}
           aria-label="收起为卡片"
         >
@@ -731,6 +747,8 @@ export default function PlaybookPage() {
   const [heroChromeSurface, setHeroChromeSurface] = useState<HeroChromeSurface>("fullscreen");
   const [heroChromeVisible, setHeroChromeVisible] = useState(true);
   const [heroChromeFadeMs, setHeroChromeFadeMs] = useState(HERO_SNAP_MS);
+  /** 全屏↔卡片 outer 几何在跑 HERO_SNAP_MS 时：冻结 Hero shader，与列表卡片默认静止同一逻辑，避免形变过程中时间轴还在走 */
+  const [heroSnapLayoutAnimating, setHeroSnapLayoutAnimating] = useState(false);
   const [viewportSize, setViewportSize] = useState({ w: 1200, h: 800 });
   const heroSpDisplayRef = useRef(0);
   const heroMotionReduceRef = useRef(false);
@@ -777,6 +795,7 @@ export default function PlaybookPage() {
     if (to === 0) setHeroChromeSurface("fullscreen");
     setHeroChromeFadeMs(HERO_SNAP_MS);
     setHeroChromeVisible(false);
+    setHeroSnapLayoutAnimating(true);
     const a = heroAnimRef.current;
     a.active = true;
     a.startTime = now;
@@ -944,6 +963,7 @@ export default function PlaybookPage() {
       ? (heroSlides[Math.max(0, Math.min(heroSlides.length - 1, activeHeroSlide))] ?? null)
       : null;
   const activeHeroBgSeed = activeHeroBgRecord ? heroGradientSeedForRecord(activeHeroBgRecord) : "";
+  const heroShaderSeed = activeHeroBgRecord ? activeHeroBgSeed : "playbook-empty-hero";
 
   const scrollPageLocked = heroSlides.length > 0 && heroWantsFullLayout;
 
@@ -1008,6 +1028,7 @@ export default function PlaybookPage() {
           a.active = false;
           heroSpDisplayRef.current = a.to;
           setHeroSpDisplay(a.to);
+          setHeroSnapLayoutAnimating(false);
           const nextSurface: HeroChromeSurface = a.to === 1 ? "card" : "fullscreen";
           setHeroChromeSurface(nextSurface);
           setHeroChromeFadeMs(HERO_CHROME_FADE_IN_MS);
@@ -1143,7 +1164,7 @@ export default function PlaybookPage() {
                   type="button"
                   tabIndex={-1}
                   aria-hidden
-                  className="invisible pointer-events-none shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white shadow-sm sm:px-4 sm:py-2 sm:text-sm"
+                  className="invisible pointer-events-none shrink-0 rounded-full border border-white/90 bg-transparent px-3.5 py-1.5 text-xs font-medium text-white sm:px-4 sm:py-2 sm:text-sm"
                 >
                   查看全部
                 </button>
@@ -1154,152 +1175,23 @@ export default function PlaybookPage() {
       ) : null}
 
       {showPage ? (
-      <div
-        className={`playbook-page-fade-in ${playbookChromeFullscreen ? "min-h-0 overflow-x-clip" : ""}`}
-      >
-      {playbookChromeFullscreen ? (
-        <>
-      <div
-        ref={heroScrollPortRef}
-        className="relative h-fit w-full shrink-0 isolate"
-      >
-        <div className="relative z-40 w-full" style={{ paddingTop: `${heroLayout.top}px` }}>
-      <header
-        className={`relative overflow-hidden text-stone-900 ${heroShellBgTransparent ? "bg-transparent" : "bg-white"}`}
-        style={{
-          position: "relative",
-          marginLeft: "auto",
-          marginRight: "auto",
-          width: `${heroLayout.outerW}px`,
-          height: `${heroLayout.outerH}px`,
-          borderRadius: `0 0 ${heroLayout.radius}px ${heroLayout.radius}px`,
-          maxWidth: "100%",
-          boxShadow:
-            heroSp > 0.04 && heroSp < 0.88
-              ? `0 22px 48px -18px rgba(15,23,42,${0.08 + 0.14 * heroSp})`
-              : undefined,
-        }}
-      >
-        {heroSlides.length > 0 ? (
+        <div
+          className={`playbook-page-fade-in ${playbookChromeFullscreen ? "min-h-0 overflow-x-clip" : ""}`}
+        >
           <div
-            className="will-change-transform"
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: 0,
-              width: viewportSize.w,
-              height: viewportSize.h,
-              marginLeft: -viewportSize.w / 2,
-              transform: `scale(${heroLayout.viewportScale})`,
-              transformOrigin: "top center",
-            }}
+            ref={heroScrollPortRef}
+            className={
+              playbookChromeFullscreen
+                ? "relative h-fit w-full shrink-0 isolate"
+                : "relative w-full min-h-0"
+            }
           >
-            <div className="relative h-full min-h-0 w-full">
-              <div className="absolute inset-0">
-                {activeHeroBgRecord ? (
-                  <div className="pointer-events-none absolute inset-0" aria-hidden>
-                    <div
-                      className="absolute inset-0 z-0 h-full w-full"
-                      style={{ background: getHeroParametricGradient(activeHeroBgSeed) }}
-                    />
-                    {!reduceHeroShaderMotion ? (
-                      <PlaybookHeroShaderBackground
-                        seed={activeHeroBgSeed}
-                        motionPaused={false}
-                      />
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-
-              <PlaybookFullscreenPathTracers
-                active={showPage && playbookChromeFullscreen}
-                motionPaused={false}
-                reduceMotion={reduceHeroShaderMotion}
-              />
-
-              <div
-                className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
-                style={{
-                  opacity: heroChromeVisible ? 1 : 0,
-                  transitionDuration: `${heroChromeFadeMs}ms`,
-                }}
-              >
-                <PlaybookHeroSlidesFullscreenChrome
-                  heroSlides={heroSlides}
-                  activeHeroSlide={activeHeroSlide}
-                  heroSlidesKey={heroSlidesKey}
-                  stripEmojiFn={stripEmoji}
-                  setActiveHeroSlide={setActiveHeroSlide}
-                  onEnterCardMode={() => beginHeroSnap(1)}
-                />
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div
-            className="will-change-transform"
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: 0,
-              width: viewportSize.w,
-              height: viewportSize.h,
-              marginLeft: -viewportSize.w / 2,
-              transform: `scale(${heroLayout.viewportScale})`,
-              transformOrigin: "top center",
-            }}
-          >
-          <div className="relative flex h-full min-h-0 w-full flex-col text-white">
-            <div className="pointer-events-none absolute inset-0 z-0 h-full w-full" aria-hidden>
-              <div
-                className="absolute inset-0 h-full w-full"
-                style={{ background: getHeroParametricGradient("playbook-empty-hero") }}
-              />
-              {!reduceHeroShaderMotion ? (
-                <PlaybookHeroShaderBackground
-                  seed="playbook-empty-hero"
-                  motionPaused={false}
-                />
-              ) : null}
-            </div>
-            <PlaybookFullscreenPathTracers
-              active={showPage && playbookChromeFullscreen}
-              motionPaused={false}
-              reduceMotion={reduceHeroShaderMotion}
-            />
             <div
-              className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
-              style={{
-                opacity: heroChromeVisible ? 1 : 0,
-                transitionDuration: `${heroChromeFadeMs}ms`,
-              }}
+              className={`relative z-40 w-full ${
+                playbookChromeFullscreen ? "" : "mx-auto max-w-7xl px-6 sm:px-8 lg:px-8"
+              }`}
+              style={{ paddingTop: `${heroLayout.top}px` }}
             >
-              <PlaybookHeroEmptyFullscreenChrome onToggleLayout={toggleHeroLayout} />
-            </div>
-          </div>
-          </div>
-        )}
-      </header>
-        </div>
-      </div>
-
-      <main
-        className={`mx-auto max-w-7xl px-6 py-10 sm:px-8 sm:py-10 lg:px-8 ${
-          playbookChromeFullscreen
-            ? "pointer-events-none invisible m-0 max-h-0 min-h-0 overflow-hidden border-0 p-0 opacity-0"
-            : ""
-        }`}
-        aria-hidden={playbookChromeFullscreen}
-      ></main>
-        </>
-      ) : (
-        <div ref={heroScrollPortRef} className="relative w-full min-h-0">
-          <main
-            className="mx-auto max-w-7xl px-6 pb-10 pt-0 sm:px-8 sm:pb-10 lg:px-8"
-            aria-hidden={false}
-          >
-            <div className="relative z-40 w-full" style={{ paddingTop: `${heroLayout.top}px` }}>
               <header
                 className={`relative overflow-hidden text-stone-900 ${heroShellBgTransparent ? "bg-transparent" : "bg-white"}`}
                 style={{
@@ -1312,25 +1204,96 @@ export default function PlaybookPage() {
                   maxWidth: "100%",
                 }}
               >
-                {heroSlides.length > 0 ? (
+                <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden" aria-hidden>
+                  {reduceHeroShaderMotion ? (
+                    <div className="absolute inset-0 bg-stone-900" />
+                  ) : (
+                    <PlaybookHeroShaderBackground
+                      key={heroShaderSeed}
+                      seed={heroShaderSeed}
+                      motionPaused={
+                        !playbookChromeFullscreen || heroSnapLayoutAnimating
+                      }
+                    />
+                  )}
+                </div>
+
+                {playbookChromeFullscreen ? (
+                  heroSlides.length > 0 ? (
+                    <div
+                      className="z-[5] will-change-transform"
+                      style={{
+                        position: "absolute",
+                        left: "50%",
+                        top: 0,
+                        width: viewportSize.w,
+                        height: viewportSize.h,
+                        marginLeft: -viewportSize.w / 2,
+                        transform: `scale(${heroLayout.viewportScale})`,
+                        transformOrigin: "top center",
+                      }}
+                    >
+                      <div className="relative h-full min-h-0 w-full">
+                        <PlaybookFullscreenPathTracers
+                          active={showPage && playbookChromeFullscreen}
+                          motionPaused={false}
+                          reduceMotion={reduceHeroShaderMotion}
+                        />
+                        <div
+                          className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
+                          style={{
+                            opacity: heroChromeVisible ? 1 : 0,
+                            transitionDuration: `${heroChromeFadeMs}ms`,
+                          }}
+                        >
+                          <PlaybookHeroSlidesFullscreenChrome
+                            heroSlides={heroSlides}
+                            activeHeroSlide={activeHeroSlide}
+                            heroSlidesKey={heroSlidesKey}
+                            stripEmojiFn={stripEmoji}
+                            setActiveHeroSlide={setActiveHeroSlide}
+                            onEnterCardMode={() => beginHeroSnap(1)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className="z-[5] will-change-transform"
+                      style={{
+                        position: "absolute",
+                        left: "50%",
+                        top: 0,
+                        width: viewportSize.w,
+                        height: viewportSize.h,
+                        marginLeft: -viewportSize.w / 2,
+                        transform: `scale(${heroLayout.viewportScale})`,
+                        transformOrigin: "top center",
+                      }}
+                    >
+                      <div className="relative flex h-full min-h-0 w-full flex-col text-white">
+                        <PlaybookFullscreenPathTracers
+                          active={showPage && playbookChromeFullscreen}
+                          motionPaused={false}
+                          reduceMotion={reduceHeroShaderMotion}
+                        />
+                        <div
+                          className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
+                          style={{
+                            opacity: heroChromeVisible ? 1 : 0,
+                            transitionDuration: `${heroChromeFadeMs}ms`,
+                          }}
+                        >
+                          <PlaybookHeroEmptyFullscreenChrome onToggleLayout={toggleHeroLayout} />
+                        </div>
+                      </div>
+                    </div>
+                  )
+                ) : heroSlides.length > 0 ? (
                   /**
                    * 卡片态：header 高度为 outerH，勿再用「整视口高 + scale」全屏套路，否则正文被 overflow-hidden 裁掉。
                    */
-                  <div className="relative h-full min-h-0 w-full overflow-hidden">
-                    <div className="absolute inset-0">
-                      {activeHeroBgRecord ? (
-                        <div className="pointer-events-none absolute inset-0" aria-hidden>
-                          <div
-                            className="absolute inset-0 z-0 h-full w-full"
-                            style={{ background: getHeroParametricGradient(activeHeroBgSeed) }}
-                          />
-                          {!reduceHeroShaderMotion ? (
-                            <PlaybookHeroShaderBackground seed={activeHeroBgSeed} motionPaused />
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-
+                  <div className="relative z-10 h-full min-h-0 w-full overflow-hidden">
                     <div
                       className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-none flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
                       style={{
@@ -1348,16 +1311,7 @@ export default function PlaybookPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="relative h-full min-h-0 w-full overflow-hidden">
-                    <div className="pointer-events-none absolute inset-0 z-0 h-full w-full text-white" aria-hidden>
-                      <div
-                        className="absolute inset-0 h-full w-full"
-                        style={{ background: getHeroParametricGradient("playbook-empty-hero") }}
-                      />
-                      {!reduceHeroShaderMotion ? (
-                        <PlaybookHeroShaderBackground seed="playbook-empty-hero" motionPaused />
-                      ) : null}
-                    </div>
+                  <div className="relative z-10 h-full min-h-0 w-full overflow-hidden">
                     <div
                       className={`pointer-events-auto absolute inset-0 z-10 mx-auto flex h-full min-h-0 w-full max-w-none flex-col transition-opacity ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${!heroChromeVisible ? "pointer-events-none" : ""}`}
                       style={{
@@ -1372,153 +1326,173 @@ export default function PlaybookPage() {
               </header>
             </div>
 
-            <div
-              ref={filterBarRef}
-              className="sticky z-50 -mx-6 mb-12 bg-white/95 px-6 py-5 backdrop-blur sm:-mx-8 sm:px-8 sm:py-6 lg:mx-0 lg:px-0 lg:py-7"
-              style={{ top: 0 }}
-            >
-          <div className="relative flex flex-wrap items-center justify-center gap-x-8 gap-y-3">
-            {isFilterSticky && (
-              <div className="absolute left-0 top-1/2 hidden -translate-y-1/2 sm:block">
-              <Image
-                src="/Lark%20Design.svg"
-                alt="Lark Design"
-                width={124}
-                height={24}
-                className="h-6 w-auto brightness-0"
+            {playbookChromeFullscreen ? (
+              <main
+                className="mx-auto max-w-7xl pointer-events-none invisible m-0 max-h-0 min-h-0 overflow-hidden border-0 p-0 opacity-0 px-6 py-10 sm:px-8 sm:py-10 lg:px-8"
+                aria-hidden
               />
-              </div>
-            )}
-            <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm">
-              <button
-                onClick={() => setSelectedCategory(null)}
-                className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
-                  !selectedCategory
-                    ? "font-semibold text-stone-900 underline underline-offset-4"
-                    : "text-stone-600 hover:text-stone-900"
-                }`}
-              >
-                All Categories
-              </button>
-              {getCategories().map((category) => (
-                <button
-                  key={category}
-                  onClick={() => setSelectedCategory(category)}
-                  className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
-                    selectedCategory === category
-                      ? "font-semibold text-stone-900 underline underline-offset-4"
-                      : "text-stone-600 hover:text-stone-900"
-                  }`}
-                >
-                  {stripEmoji(category)}
-                </button>
-              ))}
-            </div>
-            <span className="text-stone-300">|</span>
-            <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm">
-              <button
-                onClick={() => setSelectedRegion(null)}
-                className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
-                  !selectedRegion
-                    ? "font-semibold text-stone-900 underline underline-offset-4"
-                    : "text-stone-600 hover:text-stone-900"
-                }`}
-              >
-                All Regions
-              </button>
-              {getRegions().map((region) => (
-                <button
-                  key={region}
-                  onClick={() => setSelectedRegion(region)}
-                  className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
-                    selectedRegion === region
-                      ? "font-semibold text-stone-900 underline underline-offset-4"
-                      : "text-stone-600 hover:text-stone-900"
-                  }`}
-                >
-                  {stripEmoji(region)}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {error && (
-          <div className="mb-10 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-            {error}
-          </div>
-        )}
-
-        {!error && (
-          <div>
-            {visibleItems.length === 0 ? (
-              <div className="py-16 text-center">
-                <p className="text-lg text-stone-500">No items found for the selected filters.</p>
-              </div>
             ) : (
-              <div
-                className={
-                  cardGridAwaitingReveal
-                    ? "pointer-events-none select-none opacity-0"
-                    : undefined
-                }
-                aria-hidden={cardGridAwaitingReveal}
+              <main
+                className="mx-auto max-w-7xl px-6 pb-10 pt-0 sm:px-8 sm:pb-10 lg:px-8"
+                aria-hidden={false}
               >
-              <div
-                key={cardGridRevealEpoch}
-                className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 lg:gap-7"
-              >
-                {visibleItems.map((item, i) => (
-                  <Link
-                    key={`${item.record_id}-${selectedCategory ?? "c"}-${selectedRegion ?? "r"}`}
-                    href={`/article/${item.fields.Slug || item.record_id}`}
-                    className="playbook-card-enter group block rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-900"
-                    style={{
-                      animationDelay: `${Math.min(i, 24) * 64}ms`,
-                    }}
-                  >
-                    <div
-                      className="aspect-[4/3] w-full overflow-hidden rounded-xl transition-transform duration-500 ease-[cubic-bezier(0.33,1,0.68,1)] will-change-transform group-hover:scale-[1.02]"
-                      style={{
-                        background: getHeroParametricGradient(heroGradientSeedForRecord(item)),
-                      }}
-                    />
-
-                    <div className="pt-3">
-                      <h2 className="text-base font-semibold leading-snug text-stone-900 transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] group-hover:text-stone-800">
-                        {item.fields.Title}
-                      </h2>
-                      <p className="mt-1.5 text-xs text-stone-500">
-                        {[item.fields.Category, item.fields.Region?.[0]]
-                          .filter(Boolean)
-                          .map((value) => stripEmoji(String(value)))
-                          .join(" ｜ ")}
-                      </p>
+                <div
+                  ref={filterBarRef}
+                  className="sticky z-50 -mx-6 mb-12 bg-white/95 px-6 py-5 backdrop-blur sm:-mx-8 sm:px-8 sm:py-6 lg:mx-0 lg:px-0 lg:py-7"
+                  style={{ top: 0 }}
+                >
+                  <div className="relative flex flex-wrap items-center justify-center gap-x-8 gap-y-3">
+                    {isFilterSticky && (
+                      <div className="absolute left-0 top-1/2 hidden -translate-y-1/2 sm:block">
+                        <Image
+                          src="/Lark%20Design.svg"
+                          alt="Lark Design"
+                          width={124}
+                          height={24}
+                          className="h-6 w-auto brightness-0"
+                        />
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm">
+                      <button
+                        onClick={() => setSelectedCategory(null)}
+                        className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
+                          !selectedCategory
+                            ? "font-semibold text-stone-900 underline underline-offset-4"
+                            : "text-stone-600 hover:text-stone-900"
+                        }`}
+                      >
+                        All Categories
+                      </button>
+                      {getCategories().map((category) => (
+                        <button
+                          key={category}
+                          onClick={() => setSelectedCategory(category)}
+                          className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
+                            selectedCategory === category
+                              ? "font-semibold text-stone-900 underline underline-offset-4"
+                              : "text-stone-600 hover:text-stone-900"
+                          }`}
+                        >
+                          {stripEmoji(category)}
+                        </button>
+                      ))}
                     </div>
-                  </Link>
-                ))}
-              </div>
-              </div>
+                    <span className="text-stone-300">|</span>
+                    <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm">
+                      <button
+                        onClick={() => setSelectedRegion(null)}
+                        className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
+                          !selectedRegion
+                            ? "font-semibold text-stone-900 underline underline-offset-4"
+                            : "text-stone-600 hover:text-stone-900"
+                        }`}
+                      >
+                        All Regions
+                      </button>
+                      {getRegions().map((region) => (
+                        <button
+                          key={region}
+                          onClick={() => setSelectedRegion(region)}
+                          className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
+                            selectedRegion === region
+                              ? "font-semibold text-stone-900 underline underline-offset-4"
+                              : "text-stone-600 hover:text-stone-900"
+                          }`}
+                        >
+                          {stripEmoji(region)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {error && (
+                  <div className="mb-10 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                    {error}
+                  </div>
+                )}
+
+                {!error && (
+                  <div>
+                    {visibleItems.length === 0 ? (
+                      <div className="py-16 text-center">
+                        <p className="text-lg text-stone-500">No items found for the selected filters.</p>
+                      </div>
+                    ) : (
+                      <div
+                        className={
+                          cardGridAwaitingReveal
+                            ? "pointer-events-none select-none opacity-0"
+                            : undefined
+                        }
+                        aria-hidden={cardGridAwaitingReveal}
+                      >
+                        <div
+                          key={cardGridRevealEpoch}
+                          className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 lg:gap-7"
+                        >
+                          {visibleItems.map((item, i) => (
+                            <Link
+                              key={`${item.record_id}-${selectedCategory ?? "c"}-${selectedRegion ?? "r"}`}
+                              href={`/article/${item.fields.Slug || item.record_id}`}
+                              className="playbook-card-enter group block rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-900"
+                              style={{
+                                animationDelay: `${Math.min(i, 24) * 64}ms`,
+                              }}
+                            >
+                              <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl transition-transform duration-500 ease-[cubic-bezier(0.33,1,0.68,1)] will-change-transform group-hover:scale-[1.02]">
+                                <PlaybookCardCoverMedia
+                                  coverUrl={coverAttachmentUrlFromFields(item.fields)}
+                                  motionUrl={motionAttachmentUrlFromFields(item.fields)}
+                                  seed={heroGradientSeedForRecord(item)}
+                                  reduceMotion={reduceHeroShaderMotion}
+                                  recordId={item.record_id}
+                                />
+                              </div>
+
+                              <div className="pt-3">
+                                <h2 className="text-base font-semibold leading-snug text-stone-900 transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] group-hover:text-stone-800">
+                                  {item.fields.Title}
+                                </h2>
+                                <p className="mt-1.5 text-xs text-stone-500">
+                                  {[item.fields.Category, item.fields.Region?.[0]]
+                                    .filter(Boolean)
+                                    .map((value) => stripEmoji(String(value)))
+                                    .join(" ｜ ")}
+                                </p>
+                              </div>
+                            </Link>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </main>
             )}
           </div>
-        )}
-          </main>
+
+          <footer
+            className={`mt-10 border-t border-stone-200 ${
+              playbookChromeFullscreen
+                ? "pointer-events-none invisible m-0 max-h-0 min-h-0 overflow-hidden border-0 p-0 opacity-0"
+                : ""
+            }`}
+            aria-hidden={playbookChromeFullscreen}
+          >
+            <div className="mx-auto flex max-w-7xl flex-col gap-2 px-6 py-6 text-sm text-stone-500 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-6 sm:px-8 lg:px-8">
+              <p>© {new Date().getFullYear()} Lark Growth Design Playbook</p>
+              <p>Built for growth stories and design insights.</p>
+              <Link
+                href="/lark_growth_design_playbook/card-cover-video"
+                className="text-stone-600 underline-offset-4 hover:text-stone-900 hover:underline"
+              >
+                封面视频导出（工具）
+              </Link>
+            </div>
+          </footer>
         </div>
-      )}
-      <footer
-        className={`mt-10 border-t border-stone-200 ${
-          playbookChromeFullscreen
-            ? "pointer-events-none invisible m-0 max-h-0 min-h-0 overflow-hidden border-0 p-0 opacity-0"
-            : ""
-        }`}
-        aria-hidden={playbookChromeFullscreen}
-      >
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-6 text-sm text-stone-500 sm:px-8 lg:px-8">
-          <p>© {new Date().getFullYear()} Lark Growth Design Playbook</p>
-          <p>Built for growth stories and design insights.</p>
-        </div>
-      </footer>
-      </div>
       ) : null}
     </div>
   );
