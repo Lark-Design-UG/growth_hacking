@@ -4,7 +4,7 @@ const IMAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const FEISHU_RATE_LIMIT_CODE = 99991400;
 const imageCache = new Map<
   string,
-  { expiresAt: number; contentType: string; body: Uint8Array }
+  { expiresAt: number; contentType: string; body: ArrayBuffer }
 >();
 
 function parseRangeHeader(rangeHeader: string, size: number): { start: number; end: number } | null {
@@ -43,6 +43,7 @@ export async function GET(request: Request) {
     const cached = imageCache.get(token);
     if (cached && cached.expiresAt > Date.now()) {
       const totalSize = cached.body.byteLength;
+      const cachedView = new Uint8Array(cached.body);
       const commonHeaders: Record<string, string> = {
         "Content-Type": cached.contentType,
         "Cache-Control": "private, max-age=600",
@@ -59,7 +60,7 @@ export async function GET(request: Request) {
             },
           });
         }
-        const chunk = cached.body.slice(range.start, range.end + 1);
+        const chunk = cachedView.slice(range.start, range.end + 1);
         return new Response(chunk, {
           status: 206,
           headers: {
@@ -124,7 +125,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const body = new Uint8Array(arrayBuffer);
+    const body = arrayBuffer;
     imageCache.set(token, {
       expiresAt: Date.now() + IMAGE_CACHE_TTL_MS,
       contentType,
@@ -132,6 +133,7 @@ export async function GET(request: Request) {
     });
 
     const totalSize = body.byteLength;
+    const bodyView = new Uint8Array(body);
     const commonHeaders: Record<string, string> = {
       "Content-Type": contentType,
       "Cache-Control": "private, max-age=600",
@@ -148,7 +150,7 @@ export async function GET(request: Request) {
           },
         });
       }
-      const chunk = body.slice(range.start, range.end + 1);
+      const chunk = bodyView.slice(range.start, range.end + 1);
       return new Response(chunk, {
         status: 206,
         headers: {

@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { mountPlaybookHeightmapP5 } from "@/app/lark_growth_design_playbook/playbook-heightmap-p5-mount";
 import { getPlaybookAppToken, getPlaybookTableId } from "@/lib/playbook-data-source";
 import {
   heroGradientSeedForRecord,
@@ -31,6 +30,11 @@ const APP_TOKEN = getPlaybookAppToken();
 const TABLE_ID = getPlaybookTableId();
 
 type ExportFormat = "auto" | "mp4" | "webm";
+type MountedP5 = {
+  remove: () => void;
+  getCanvas: () => HTMLCanvasElement | null;
+  resize: (w: number, h: number) => void;
+};
 
 function pickVideoMimeType(format: ExportFormat): string | undefined {
   const mp4Candidates = ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4;codecs=avc1", "video/mp4"];
@@ -61,7 +65,7 @@ function randomSeedToken(): string {
 
 export default function CardCoverVideoPage() {
   const hostRef = useRef<HTMLDivElement>(null);
-  const mountRef = useRef<ReturnType<typeof mountPlaybookHeightmapP5> | null>(null);
+  const mountRef = useRef<MountedP5 | null>(null);
 
   const [data, setData] = useState<BaseData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -133,20 +137,30 @@ export default function CardCoverVideoPage() {
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !effectiveSeed) return undefined;
+    let activeMount: MountedP5 | null = null;
+    let disposed = false;
     mountRef.current?.remove();
     mountRef.current = null;
     host.innerHTML = "";
-    const m = mountPlaybookHeightmapP5(host, effectiveSeed, {
-      width: outW,
-      height: outH,
-      preserveDrawingBuffer: true,
-      themeBaseHex: themeHex,
-      themeAccentHexes,
-    });
-    mountRef.current = m;
+    void (async () => {
+      const { mountPlaybookHeightmapP5 } = await import(
+        "@/app/lark_growth_design_playbook/playbook-heightmap-p5-mount"
+      );
+      if (disposed) return;
+      const m = mountPlaybookHeightmapP5(host, effectiveSeed, {
+        width: outW,
+        height: outH,
+        preserveDrawingBuffer: true,
+        themeBaseHex: themeHex,
+        themeAccentHexes,
+      });
+      activeMount = m;
+      mountRef.current = m;
+    })();
     return () => {
-      m.remove();
-      if (mountRef.current === m) mountRef.current = null;
+      disposed = true;
+      activeMount?.remove();
+      if (mountRef.current === activeMount) mountRef.current = null;
     };
   }, [effectiveSeed, themeHex, themeAccentHexes, outW, outH]);
 

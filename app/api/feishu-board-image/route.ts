@@ -3,7 +3,7 @@ import { getTenantAccessToken } from "@/lib/feishu/auth";
 const BOARD_IMAGE_CACHE_TTL_MS = 10 * 60 * 1000;
 const boardImageCache = new Map<
   string,
-  { expiresAt: number; contentType: string; body: Uint8Array }
+  { expiresAt: number; contentType: string; body: ArrayBuffer }
 >();
 
 export async function GET(request: Request) {
@@ -54,7 +54,7 @@ export async function GET(request: Request) {
     }
 
     const arrayBuffer = await upstream.arrayBuffer();
-    const body = new Uint8Array(arrayBuffer);
+    const body = arrayBuffer;
     const contentType =
       upstream.headers.get("content-type") ?? "application/octet-stream";
 
