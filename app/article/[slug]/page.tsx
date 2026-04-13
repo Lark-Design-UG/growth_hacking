@@ -9,17 +9,29 @@ import {
   useRef,
   useState,
 } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import styles from "./article.module.css";
+import { PlaybookSplashPaths } from "@/app/lark_growth_design_playbook/playbook-splash-paths";
+import {
+  heroGradientSeedForRecord,
+  themeHexesFromFields,
+} from "@/lib/hero-parametric-gradient";
 
 const PRESET_DOCUMENT_ID = "JCKEw8gDBiupjkko8ZCcOtYOnLd";
 const APP_TOKEN = "B4K3bAYKTau24es6Dxdcq3FEnig";
 const TABLE_ID = "tblHalmUkZ8AZSgp";
+const LINE_CAP_BEFORE_SEAL = 0.88;
+const PlaybookHeroShaderBackground = dynamic(
+  () => import("@/app/lark_growth_design_playbook/playbook-hero-shader-bg"),
+  { ssr: false }
+);
 
 type ContentSegment =
   | { type: "text"; value: string }
-  | { type: "image"; value: string; alt?: string };
+  | { type: "image"; value: string; alt?: string }
+  | { type: "video"; value: string };
 type ArticleBlock =
   | { type: "heading"; text: string; level: number }
   | { type: "paragraph"; text: string }
@@ -29,7 +41,8 @@ type ArticleBlock =
   | { type: "ul"; items: string[] }
   | { type: "ol"; items: string[] }
   | { type: "table"; rows: string[][] }
-  | { type: "image"; url: string };
+  | { type: "image"; url: string }
+  | { type: "video"; url: string; caption?: string };
 
 type ArticleApiData = {
   recordId: string;
@@ -49,6 +62,8 @@ type ArticleApiData = {
     rows?: string[][];
     imageUrl?: string;
     imageToken?: string;
+    videoUrl?: string;
+    videoToken?: string;
     caption?: string;
     columns?: string[];
     raw?: unknown;
@@ -131,6 +146,11 @@ function buildHeadingId(text: string, index: number): string {
   return `section-${index}-${slugifyHeading(text)}`;
 }
 
+function isFeishuMediaProxyUrl(value: string): boolean {
+  const v = value.trim();
+  return /^\/api\/feishu-image\?token=.+/i.test(v);
+}
+
 function buildRowSpanTable(rows: string[][]): MergedCell[][] {
   if (!rows.length) return [];
   const colCount = Math.max(...rows.map((r) => r.length));
@@ -208,9 +228,35 @@ function renderRichCellContent(text: string, keyPrefix: string): ReactNode[] {
       }
       continue;
     }
+    if (seg.type === "video") {
+      nodes.push(
+        <video
+          key={`${keyPrefix}-video-${idx++}`}
+          src={seg.value}
+          controls
+          playsInline
+          preload="metadata"
+          className={styles.gridColumnImage}
+        />
+      );
+      continue;
+    }
     const lines = seg.value.split(/\r?\n/).filter((line) => line.trim().length > 0);
     if (!lines.length) continue;
     for (const line of lines) {
+      if (isFeishuMediaProxyUrl(line)) {
+        nodes.push(
+          <video
+            key={`${keyPrefix}-video-line-${idx++}`}
+            src={line.trim()}
+            controls
+            playsInline
+            preload="metadata"
+            className={styles.gridColumnImage}
+          />
+        );
+        continue;
+      }
       nodes.push(
         <p key={`${keyPrefix}-txt-${idx++}`} className={styles.gridColumnText}>
           {renderInline(line, `${keyPrefix}-inline-${idx}`)}
@@ -227,22 +273,25 @@ function renderRichCellContent(text: string, keyPrefix: string): ReactNode[] {
 
 function parseContentSegments(content: string): ContentSegment[] {
   const segments: ContentSegment[] = [];
-  const imageRegex =
-    /!\[([^\]]*)]\(((?:https?:\/\/|\/)[^)\s]+)\)|<img[^>]*src=["']((?:https?:\/\/|\/)[^"']+)["'][^>]*>/gi;
+  const mediaRegex =
+    /!\[([^\]]*)]\(((?:https?:\/\/|\/)[^)\s]+)\)|<img[^>]*src=["']((?:https?:\/\/|\/)[^"']+)["'][^>]*>|<video[^>]*src=["']((?:https?:\/\/|\/)[^"']+)["'][^>]*>(?:<\/video>)?/gi;
   let lastIndex = 0;
   let match: RegExpExecArray | null = null;
 
-  while ((match = imageRegex.exec(content)) !== null) {
+  while ((match = mediaRegex.exec(content)) !== null) {
     const textPart = content.slice(lastIndex, match.index);
     if (textPart) {
       segments.push({ type: "text", value: textPart });
     }
     const markdownAlt = match[1] ?? "";
     const imageUrl = match[2] ?? match[3];
-    if (imageUrl) {
+    const videoUrl = match[4];
+    if (videoUrl) {
+      segments.push({ type: "video", value: videoUrl });
+    } else if (imageUrl) {
       segments.push({ type: "image", value: imageUrl, alt: markdownAlt });
     }
-    lastIndex = imageRegex.lastIndex;
+    lastIndex = mediaRegex.lastIndex;
   }
 
   const tail = content.slice(lastIndex);
@@ -448,6 +497,10 @@ function parseArticleBlocks(content: string): ArticleBlock[] {
   for (const segment of segments) {
     if (segment.type === "image") {
       blocks.push({ type: "image", url: segment.value });
+      continue;
+    }
+    if (segment.type === "video") {
+      blocks.push({ type: "video", url: segment.value });
       continue;
     }
     blocks.push(...parseTextSegmentToBlocks(segment.value));
@@ -964,6 +1017,24 @@ function ArticleContent({
                   </figure>
                 );
               }
+              if (block.type === "video") {
+                return (
+                  <figure key={block.id} className={styles.imageBlockWrap}>
+                    <video
+                      src={block.videoUrl}
+                      controls
+                      playsInline
+                      preload="metadata"
+                      className={styles.image}
+                    />
+                    {block.caption ? (
+                      <figcaption className={styles.imageCaption}>
+                        {block.caption}
+                      </figcaption>
+                    ) : null}
+                  </figure>
+                );
+              }
               if (block.type === "table") {
                 const rows = block.rows ?? [];
                 const mergedRows = buildRowSpanTable(rows);
@@ -1051,17 +1122,37 @@ function ArticleContent({
                                   <p className={styles.imageCaption}>{seg.alt.trim()}</p>
                                 ) : null}
                               </Fragment>
+                            ) : seg.type === "video" ? (
+                              <video
+                                key={`${block.id}-col-${colIdx}-video-${segIdx}`}
+                                src={seg.value}
+                                controls
+                                playsInline
+                                preload="metadata"
+                                className={styles.gridColumnImage}
+                              />
                             ) : (
                               seg.value.trim() ? (
-                                <p
-                                  key={`${block.id}-col-${colIdx}-text-${segIdx}`}
-                                  className={styles.gridColumnText}
-                                >
-                                  {renderInline(
-                                    seg.value,
-                                    `block-grid-${index}-${colIdx}-${segIdx}`
-                                  )}
-                                </p>
+                                isFeishuMediaProxyUrl(seg.value) ? (
+                                  <video
+                                    key={`${block.id}-col-${colIdx}-video-url-${segIdx}`}
+                                    src={seg.value.trim()}
+                                    controls
+                                    playsInline
+                                    preload="metadata"
+                                    className={styles.gridColumnImage}
+                                  />
+                                ) : (
+                                  <p
+                                    key={`${block.id}-col-${colIdx}-text-${segIdx}`}
+                                    className={styles.gridColumnText}
+                                  >
+                                    {renderInline(
+                                      seg.value,
+                                      `block-grid-${index}-${colIdx}-${segIdx}`
+                                    )}
+                                  </p>
+                                )
                               ) : null
                             )
                           )}
@@ -1120,7 +1211,7 @@ function collectDocUrl(value: unknown): string | null {
   if (typeof value === "string") {
     const match = value.match(/https?:\/\/[^\s]+/);
     const url = match?.[0] ?? value;
-    if (url.includes("/docx/")) return url;
+    if (url.includes("/docx/") || url.includes("/wiki/")) return url;
     return null;
   }
 
@@ -1142,8 +1233,16 @@ function collectDocUrl(value: unknown): string | null {
   return null;
 }
 
+function pickArticleDocsUrl(fields: Record<string, unknown>): string | null {
+  const preferred = collectDocUrl(fields["Pub Docs"]);
+  if (preferred) return preferred;
+  const fallback = collectDocUrl(fields["Ori Docs"]);
+  if (fallback) return fallback;
+  return null;
+}
+
 function extractDocumentId(url: string): string | null {
-  const match = url.match(/\/docx\/([A-Za-z0-9]+)/);
+  const match = url.match(/\/(?:docx|wiki)\/([A-Za-z0-9]+)/i);
   return match?.[1] ?? null;
 }
 
@@ -1153,6 +1252,7 @@ export default function ArticlePage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const slug = params.slug as string;
+  const recordIdFromQuery = searchParams.get("rid") ?? searchParams.get("recordId") ?? "";
   const debugEnabled = searchParams.get("debug") === "1";
   const debugDocsUrl =
     searchParams.get("debugDocsUrl") ?? searchParams.get("debugDocUrl");
@@ -1160,7 +1260,21 @@ export default function ArticlePage() {
   const [loading, setLoading] = useState(false);
   const [streamComplete, setStreamComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [splashVisible, setSplashVisible] = useState(true);
+  const [lineRatio, setLineRatio] = useState(0);
+  const [isFetching, setIsFetching] = useState(true);
+  const [sealPhase, setSealPhase] = useState(false);
+  const sealingRef = useRef(false);
+  const splashDismissedRef = useRef(false);
+  const splashCurveRef = useRef<SVGPathElement | null>(null);
+  const splashHLineRef = useRef<SVGLineElement | null>(null);
+  const splashVLineRef = useRef<SVGLineElement | null>(null);
+  const [splashStrokeLens, setSplashStrokeLens] = useState<[number, number, number]>([0, 0, 0]);
   const [article, setArticle] = useState<ArticleApiData | null>(null);
+  /** 与 Playbook 同源：多维表 theme 列基准色，供 Hero shader */
+  const [articleThemeHex, setArticleThemeHex] = useState<string | null>(null);
+  const [articleThemeAccentHexes, setArticleThemeAccentHexes] = useState<string[]>([]);
+  const [articleSeed, setArticleSeed] = useState<string | null>(null);
   const articleBlocks = useMemo(
     () => (article ? parseArticleBlocks(article.content) : []),
     [article]
@@ -1215,10 +1329,83 @@ export default function ArticlePage() {
   const [activeTocId, setActiveTocId] = useState<string>("");
   const [titleStuck, setTitleStuck] = useState(false);
   const titleSentinelRef = useRef<HTMLDivElement | null>(null);
+  const articleCoverSeed = useMemo(
+    () => articleSeed ?? `${slug || "article"}|${article?.recordId || "cover"}`,
+    [article?.recordId, articleSeed, slug]
+  );
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  const dismissSplash = useCallback(() => {
+    if (splashDismissedRef.current) return;
+    splashDismissedRef.current = true;
+    sealingRef.current = false;
+    setSplashVisible(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isFetching || !splashVisible) return;
+    let raf = 0;
+    const tick = () => {
+      setLineRatio((p) => {
+        if (p >= LINE_CAP_BEFORE_SEAL) return p;
+        const room = LINE_CAP_BEFORE_SEAL - p;
+        return p + Math.max(0.00035, room * 0.028);
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isFetching, splashVisible]);
+
+  useEffect(() => {
+    if (!splashVisible) return;
+    const measure = () => {
+      const c = splashCurveRef.current?.getTotalLength() ?? 0;
+      const h = splashHLineRef.current?.getTotalLength() ?? 0;
+      const v = splashVLineRef.current?.getTotalLength() ?? 0;
+      if (c > 0 && h > 0 && v > 0) {
+        setSplashStrokeLens([c, h, v]);
+      }
+    };
+    const id = requestAnimationFrame(measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(id);
+      window.removeEventListener("resize", measure);
+    };
+  }, [splashVisible]);
+
+  const onSplashProgressTransitionEnd = (e: React.TransitionEvent<SVGGeometryElement>) => {
+    if (!sealingRef.current) return;
+    if (e.propertyName !== "stroke-dashoffset") return;
+    dismissSplash();
+  };
+
+  useEffect(() => {
+    if (!sealPhase || lineRatio < 1 || !splashVisible) return;
+    const t = window.setTimeout(() => {
+      if (sealingRef.current) dismissSplash();
+    }, 1150);
+    return () => window.clearTimeout(t);
+  }, [dismissSplash, lineRatio, sealPhase, splashVisible]);
+
+  useEffect(() => {
+    if (!splashVisible || isFetching) return;
+    if (lineRatio >= 1) {
+      dismissSplash();
+      return;
+    }
+    sealingRef.current = true;
+    setSealPhase(true);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setLineRatio(1);
+      });
+    });
+  }, [dismissSplash, isFetching, lineRatio, splashVisible]);
 
   useEffect(() => {
     if (!titleSentinelRef.current) return;
@@ -1266,10 +1453,19 @@ export default function ArticlePage() {
     let cancelled = false;
 
     const loadArticle = async () => {
+      splashDismissedRef.current = false;
+      setSplashVisible(true);
+      setLineRatio(0);
+      setSealPhase(false);
+      sealingRef.current = false;
+      setIsFetching(true);
       setLoading(true);
       setStreamComplete(false);
       setError(null);
       setArticle(null);
+      setArticleThemeHex(null);
+      setArticleThemeAccentHexes([]);
+      setArticleSeed(null);
 
       try {
         let docsUrl = "";
@@ -1289,7 +1485,12 @@ export default function ArticlePage() {
           docsUrl = debugDocsUrl ?? "";
           documentId = debugDocsUrl ? extractDocumentId(debugDocsUrl) ?? "" : "";
         } else {
-          const playbookRes = await fetch(`/api/playbook?slug=${encodeURIComponent(slug)}`);
+          const playbookRes = await fetch(
+            `/api/playbook?${new URLSearchParams({
+              slug,
+              ...(recordIdFromQuery ? { recordId: recordIdFromQuery } : {}),
+            }).toString()}`
+          );
           const playbookResult = await playbookRes.json();
 
           if (!playbookResult.ok) {
@@ -1298,7 +1499,16 @@ export default function ArticlePage() {
 
           const record = playbookResult.data;
           recordId = record.record_id;
-          docsUrl = collectDocUrl(record.fields) ?? "";
+          setArticleSeed(
+            heroGradientSeedForRecord({
+              record_id: record.record_id,
+              fields: record.fields as Record<string, unknown>,
+            }),
+          );
+          const themeHexes = themeHexesFromFields(record.fields as Record<string, unknown>);
+          setArticleThemeHex(themeHexes[0] ?? null);
+          setArticleThemeAccentHexes(themeHexes.slice(1));
+          docsUrl = pickArticleDocsUrl(record.fields as Record<string, unknown>) ?? "";
           documentId = extractDocumentId(docsUrl) ?? "";
           articleApiUrl = `/api/article?appToken=${APP_TOKEN}&tableId=${TABLE_ID}&recordId=${record.record_id}&stream=1`;
         }
@@ -1367,6 +1577,10 @@ export default function ArticlePage() {
           setError(String(err));
           setLoading(false);
         }
+      } finally {
+        if (!cancelled) {
+          setIsFetching(false);
+        }
       }
     };
 
@@ -1374,7 +1588,7 @@ export default function ArticlePage() {
     return () => {
       cancelled = true;
     };
-  }, [debugDocsUrl, debugEnabled, slug]);
+  }, [debugDocsUrl, debugEnabled, recordIdFromQuery, slug]);
 
   if (!mounted) {
     return (
@@ -1408,6 +1622,34 @@ export default function ArticlePage() {
 
   return (
     <div className="relative min-h-screen bg-white pb-16">
+      {splashVisible ? (
+        <div
+          className="fixed inset-0 z-[200] flex min-h-0 min-w-0 flex-col bg-white"
+          aria-busy
+          aria-live="polite"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(lineRatio * 100)}
+        >
+          <span className="sr-only">加载中</span>
+          <div className="pointer-events-none absolute inset-0 z-0 flex min-h-0 min-w-0 flex-col">
+            <PlaybookSplashPaths
+              curveRef={splashCurveRef}
+              hLineRef={splashHLineRef}
+              vLineRef={splashVLineRef}
+              lengths={splashStrokeLens}
+              measured={
+                splashStrokeLens[0] > 0 &&
+                splashStrokeLens[1] > 0 &&
+                splashStrokeLens[2] > 0
+              }
+              lineRatio={lineRatio}
+              sealPhase={sealPhase}
+              onStrokeTransitionEnd={onSplashProgressTransitionEnd}
+            />
+          </div>
+        </div>
+      ) : null}
       <div
         className="pointer-events-none fixed inset-0 -z-10"
         style={{
@@ -1531,18 +1773,24 @@ export default function ArticlePage() {
             </div>
           </div>
           <div className="relative z-[5] flex items-center justify-center">
-            <ShaderCover className="absolute inset-0 h-full w-full" />
+            <PlaybookHeroShaderBackground
+              seed={articleCoverSeed}
+              themeBaseHex={articleThemeHex}
+              themeAccentHexes={articleThemeAccentHexes}
+              variant="hero"
+              motionPaused={false}
+            />
             <div ref={titleSentinelRef} className="relative z-10 mx-auto max-w-[860px] px-5 py-20 text-center sm:px-8 sm:py-28 lg:py-45">
 
-              <h1 className="text-3xl font-bold tracking-tight text-gray-800 sm:text-4xl lg:text-[3rem] lg:leading-[1.15]">
+              <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl lg:text-[3rem] lg:leading-[1.15]">
                 {!article ? (
-                  <span className="mx-auto block h-10 w-2/3 animate-pulse rounded bg-gray-800/15" />
+                  <span className="mx-auto block h-10 w-2/3 animate-pulse rounded bg-white/25" />
                 ) : (
                   articleTitle
                 )}
               </h1>
               {article && coverTags.length > 0 ? (
-                <div className="mt-4 text-center text-sm text-gray-700/85">
+                <div className="mt-4 text-center text-sm text-white/85">
                   {coverTags.join(" · ")}
                 </div>
               ) : !article ? (

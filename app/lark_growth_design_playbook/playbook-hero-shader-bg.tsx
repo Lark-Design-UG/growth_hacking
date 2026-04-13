@@ -91,10 +91,16 @@ type P5GraphicsPixels = {
   updatePixels(): void;
 };
 
-function buildRampGraphics(p: P5Instance, seed: string, rampWidth: number): P5GraphicsPixels {
+function buildRampGraphics(
+  p: P5Instance,
+  seed: string,
+  rampWidth: number,
+  themeBaseHex?: string | null,
+  themeAccentHexes: string[] = [],
+): P5GraphicsPixels {
   const g = p.createGraphics(rampWidth, 1);
   g.pixelDensity(1);
-  const px = heroHeightmapRampPixels(seed, rampWidth);
+  const px = heroHeightmapRampPixels(seed, rampWidth, themeBaseHex, themeAccentHexes);
   g.loadPixels();
   for (let i = 0; i < px.length; i += 1) {
     g.pixels[i] = px[i];
@@ -109,8 +115,14 @@ function buildRampGraphics(p: P5Instance, seed: string, rampWidth: number): P5Gr
  */
 type PlaybookHeroShaderBackgroundProps = {
   seed: string;
+  /** 多维表 `theme` 解析出的基准色（#RRGGBB）；有则 shader / 降级 CSS 渐变以此色相为轴 */
+  themeBaseHex?: string | null;
+  /** 多维表 `theme` 解析出的辅助色；用于扩展色标但仍保留 seed 生成的额外层次 */
+  themeAccentHexes?: string[];
   /** 卡片态下冻结波动（时间不前进），减轻 GPU 与小窗动效 */
   motionPaused?: boolean;
+  /** 是否应用柔化（blur/contrast/saturate）；默认 true */
+  soften?: boolean;
   /** hero：全屏/Header；card：列表卡片缩略图（更省 GPU） */
   variant?: "hero" | "card";
   /**
@@ -126,7 +138,10 @@ type PlaybookHeroShaderBackgroundProps = {
 
 export default function PlaybookHeroShaderBackground({
   seed,
+  themeBaseHex = null,
+  themeAccentHexes = [],
   motionPaused = false,
+  soften = true,
   variant = "hero",
   viewportGate: viewportGateProp,
   viewportRootMargin = CARD_VIEWPORT_ROOT_MARGIN,
@@ -278,7 +293,7 @@ export default function PlaybookHeroShaderBackground({
           p.pixelDensity(cfg.pixelDensity);
           p.noStroke();
 
-          ramp = buildRampGraphics(p, seed, cfg.rampWidth);
+          ramp = buildRampGraphics(p, seed, cfg.rampWidth, themeBaseHex, themeAccentHexes);
           bgShader = p.createShader(heightmapRampVert, heightmapRampFrag) as P5ShaderUniforms;
         };
 
@@ -344,20 +359,21 @@ export default function PlaybookHeroShaderBackground({
       ro = null;
       sizeKickObs = null;
     };
-  }, [seed, variant, webglActive, glRemountKey]);
+  }, [seed, themeBaseHex, themeAccentHexes, variant, webglActive, glRemountKey]);
 
   const cfg = heightmapConfigForVariant(variant);
-  const blurShellClass =
-    variant === "card"
+  const blurShellClass = soften
+    ? variant === "card"
       ? "pointer-events-none absolute -inset-[10%] z-[1] h-[120%] w-[120%] origin-center blur-[10px] contrast-[0.97] saturate-[1.02]"
-      : "pointer-events-none absolute -inset-[14%] z-[1] h-[128%] w-[128%] origin-center blur-[clamp(14px,3.2vw,28px)] contrast-[0.96] saturate-[1.02]";
+      : "pointer-events-none absolute -inset-[14%] z-[1] h-[128%] w-[128%] origin-center blur-[clamp(14px,3.2vw,28px)] contrast-[0.96] saturate-[1.02]"
+    : "pointer-events-none absolute inset-0 z-[1] h-full w-full";
 
   return (
     <div ref={gateRef} className="pointer-events-none absolute inset-0 z-[1] overflow-hidden opacity-100">
       {viewportGate && !webglActive ? (
         <div
           className="absolute inset-0 z-0"
-          style={{ background: getHeroParametricGradient(seed) }}
+          style={{ background: getHeroParametricGradient(seed, themeBaseHex, themeAccentHexes) }}
           aria-hidden
         />
       ) : null}

@@ -1,5 +1,5 @@
 import {
-  getBaseRecord,
+  getBaseRecords,
   getDocumentBlocks,
   getDocumentContent,
   getDocumentMeta,
@@ -17,13 +17,19 @@ const ARTICLE_CACHE_TTL_MS = 3 * 60_000;
 const ARTICLE_CACHE_SCHEMA_VERSION = "v4";
 const articleCache = new Map<string, { expiresAt: number; data: unknown }>();
 
+function isPublishedFields(fields: Record<string, unknown>): boolean {
+  const raw = fields.Status ?? fields.status ?? fields.STATUS;
+  if (typeof raw !== "string") return false;
+  return raw.trim().toLowerCase() === "pub";
+}
+
 function collectDocUrl(value: unknown): string | null {
   if (!value) return null;
 
   if (typeof value === "string") {
     const match = value.match(/https?:\/\/[^\s]+/);
     const url = match?.[0] ?? value;
-    if (url.includes("/docx/")) return url;
+    if (url.includes("/docx/") || url.includes("/wiki/")) return url;
     return null;
   }
 
@@ -42,6 +48,14 @@ function collectDocUrl(value: unknown): string | null {
     }
   }
 
+  return null;
+}
+
+function pickArticleDocsUrl(fields: Record<string, unknown>): string | null {
+  const preferred = collectDocUrl(fields["Pub Docs"]);
+  if (preferred) return preferred;
+  const fallback = collectDocUrl(fields["Ori Docs"]);
+  if (fallback) return fallback;
   return null;
 }
 
@@ -170,6 +184,9 @@ type DocxBlock = {
   quote?: { elements?: DocxElement[] };
   quote_container?: { elements?: DocxElement[] };
   image?: { token?: string; caption?: { content?: string } };
+  video?: { token?: string; caption?: { content?: string } };
+  media?: { token?: string; caption?: { content?: string }; mime_type?: string; name?: string };
+  file?: { token?: string; name?: string; mime_type?: string };
   board?: { token?: string };
   divider?: Record<string, unknown>;
   grid?: Record<string, unknown>;
@@ -184,10 +201,32 @@ type ArticleBlockPayload = {
   rows?: string[][];
   imageUrl?: string;
   imageToken?: string;
+  videoUrl?: string;
+  videoToken?: string;
   caption?: string;
   columns?: string[];
   raw?: unknown;
 };
+
+function looksLikeVideoByMeta(name?: string, mimeType?: string): boolean {
+  const mime = (mimeType ?? "").toLowerCase();
+  if (mime.startsWith("video/")) return true;
+  const lower = (name ?? "").toLowerCase();
+  return [".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv"].some((ext) => lower.endsWith(ext));
+}
+
+function resolveVideoToken(block: DocxBlock): { token: string; caption?: string } | null {
+  if (block.video?.token) {
+    return { token: block.video.token, caption: block.video.caption?.content ?? "" };
+  }
+  if (block.media?.token && looksLikeVideoByMeta(block.media.name, block.media.mime_type)) {
+    return { token: block.media.token, caption: block.media.caption?.content ?? "" };
+  }
+  if (block.file?.token && looksLikeVideoByMeta(block.file.name, block.file.mime_type)) {
+    return { token: block.file.token, caption: block.file.name ?? "" };
+  }
+  return null;
+}
 
 function renderElementsToMarkdown(elements: DocxElement[] = []): string {
   return elements
@@ -234,6 +273,12 @@ function blockToMarkdownLine(block: DocxBlock): string | null {
   if (block.image?.token) {
     const caption = block.image.caption?.content ?? "";
     const url = `/api/feishu-image?token=${encodeURIComponent(block.image.token)}`;
+    return `![${caption}](${url})`;
+  }
+  const video = resolveVideoToken(block);
+  if (video?.token) {
+    const caption = video.caption ?? "";
+    const url = `/api/feishu-image?token=${encodeURIComponent(video.token)}`;
     return `![${caption}](${url})`;
   }
   if (block.board?.token) {
@@ -287,6 +332,16 @@ function normalizeDocxBlock(block: DocxBlock): ArticleBlockPayload {
       caption: block.image.caption?.content ?? "",
     };
   }
+  const video = resolveVideoToken(block);
+  if (video?.token) {
+    return {
+      id,
+      type: "video",
+      videoUrl: `/api/feishu-image?token=${encodeURIComponent(video.token)}`,
+      videoToken: video.token,
+      caption: video.caption ?? "",
+    };
+  }
   if (block.board?.token) {
     return {
       id,
@@ -313,6 +368,10 @@ function extractTextFromBlockTree(
         block.image.token
       )})`
     : "";
+  const videoMeta = resolveVideoToken(block);
+  const videoLine = videoMeta?.token
+    ? `<video src="/api/feishu-image?token=${encodeURIComponent(videoMeta.token)}"></video>`
+    : "";
   const own =
     renderElementsToMarkdown(block.heading1?.elements) ||
     renderElementsToMarkdown(block.heading2?.elements) ||
@@ -326,7 +385,8 @@ function extractTextFromBlockTree(
     renderElementsToMarkdown(block.callout?.elements) ||
     renderElementsToMarkdown(block.quote?.elements) ||
     renderElementsToMarkdown(block.quote_container?.elements) ||
-    imageLine;
+    imageLine ||
+    videoLine;
 
   const childText = (block.children ?? [])
     .map((childId) => extractTextFromBlockTree(blockById.get(childId), blockById, depth + 1))
@@ -382,7 +442,8 @@ function normalizeBlocks(
         );
         const total = cells.length;
         let colCount = 2;
-        for (const c of [4, 3, 2]) {
+        // 优先较小列数，避免 8 格被误判成 4 列（常见实际是 2 列 challenge 表）
+        for (const c of [2, 3, 4]) {
           if (total >= c && total % c === 0) {
             colCount = c;
             break;
@@ -425,10 +486,29 @@ async function resolveDocumentId(
       tags: [],
     };
   }
-  const recordData = await getBaseRecord(appToken!, tableId!, recordId!);
-  const record = (recordData as { record?: { fields?: Record<string, unknown> } }).record;
+  const recordsData = await getBaseRecords(appToken!, tableId!);
+  const record = ((recordsData as { items?: Array<{ record_id?: string; fields?: Record<string, unknown> }> }).items ?? [])
+    .find((item) => item.record_id === recordId);
+  if (!record) {
+    return {
+      ok: false,
+      response: Response.json(
+        { ok: false, error: "Record not found" },
+        { status: 404 }
+      ),
+    };
+  }
   const fields = record?.fields ?? {};
-  const docsUrl = collectDocUrl(fields) ?? "";
+  if (!isPublishedFields(fields)) {
+    return {
+      ok: false,
+      response: Response.json(
+        { ok: false, error: "Record not found" },
+        { status: 404 }
+      ),
+    };
+  }
+  const docsUrl = pickArticleDocsUrl(fields) ?? "";
   const tags = collectTagsFromFields(fields);
   if (!docsUrl) {
     return {
@@ -572,10 +652,15 @@ async function handleStreaming(
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const debug = searchParams.get("debug") === "1" || GLOBAL_DEBUG_ENABLED;
     const appToken = searchParams.get("appToken");
     const tableId = searchParams.get("tableId");
     const recordId = searchParams.get("recordId");
+    const debugByQuery = searchParams.get("debug") === "1";
+    /**
+     * 线上正常路径（带 recordId）应优先读取真实记录。
+     * GLOBAL_DEBUG_ENABLED 仅在无 recordId（独立调试入口）时兜底启用。
+     */
+    const debug = debugByQuery || (GLOBAL_DEBUG_ENABLED && !recordId);
     const debugDocsUrl =
       searchParams.get("debugDocsUrl") ?? searchParams.get("debugDocUrl");
     const streaming = searchParams.get("stream") === "1";

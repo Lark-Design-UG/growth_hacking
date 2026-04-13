@@ -7,10 +7,34 @@ const imageCache = new Map<
   { expiresAt: number; contentType: string; body: Uint8Array }
 >();
 
+function parseRangeHeader(rangeHeader: string, size: number): { start: number; end: number } | null {
+  const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/i);
+  if (!m) return null;
+  const startRaw = m[1];
+  const endRaw = m[2];
+
+  if (!startRaw && !endRaw) return null;
+
+  // bytes=-N: 最后 N 字节
+  if (!startRaw && endRaw) {
+    const suffixLen = Number(endRaw);
+    if (!Number.isFinite(suffixLen) || suffixLen <= 0) return null;
+    const start = Math.max(0, size - suffixLen);
+    return { start, end: size - 1 };
+  }
+
+  const start = Number(startRaw);
+  const end = endRaw ? Number(endRaw) : size - 1;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start < 0 || end < start || start >= size) return null;
+  return { start, end: Math.min(end, size - 1) };
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const token = searchParams.get("token");
+    const rangeHeader = request.headers.get("range");
 
     if (!token) {
       return Response.json({ ok: false, error: "Missing image token" }, { status: 400 });
@@ -18,12 +42,36 @@ export async function GET(request: Request) {
 
     const cached = imageCache.get(token);
     if (cached && cached.expiresAt > Date.now()) {
+      const totalSize = cached.body.byteLength;
+      const commonHeaders: Record<string, string> = {
+        "Content-Type": cached.contentType,
+        "Cache-Control": "private, max-age=600",
+        "Accept-Ranges": "bytes",
+      };
+      if (rangeHeader) {
+        const range = parseRangeHeader(rangeHeader, totalSize);
+        if (!range) {
+          return new Response(null, {
+            status: 416,
+            headers: {
+              ...commonHeaders,
+              "Content-Range": `bytes */${totalSize}`,
+            },
+          });
+        }
+        const chunk = cached.body.slice(range.start, range.end + 1);
+        return new Response(chunk, {
+          status: 206,
+          headers: {
+            ...commonHeaders,
+            "Content-Range": `bytes ${range.start}-${range.end}/${totalSize}`,
+            "Content-Length": String(chunk.byteLength),
+          },
+        });
+      }
       return new Response(cached.body, {
         status: 200,
-        headers: {
-          "Content-Type": cached.contentType,
-          "Cache-Control": "private, max-age=600",
-        },
+        headers: { ...commonHeaders, "Content-Length": String(totalSize) },
       });
     }
 
@@ -83,11 +131,38 @@ export async function GET(request: Request) {
       body,
     });
 
+    const totalSize = body.byteLength;
+    const commonHeaders: Record<string, string> = {
+      "Content-Type": contentType,
+      "Cache-Control": "private, max-age=600",
+      "Accept-Ranges": "bytes",
+    };
+    if (rangeHeader) {
+      const range = parseRangeHeader(rangeHeader, totalSize);
+      if (!range) {
+        return new Response(null, {
+          status: 416,
+          headers: {
+            ...commonHeaders,
+            "Content-Range": `bytes */${totalSize}`,
+          },
+        });
+      }
+      const chunk = body.slice(range.start, range.end + 1);
+      return new Response(chunk, {
+        status: 206,
+        headers: {
+          ...commonHeaders,
+          "Content-Range": `bytes ${range.start}-${range.end}/${totalSize}`,
+          "Content-Length": String(chunk.byteLength),
+        },
+      });
+    }
     return new Response(body, {
       status: 200,
       headers: {
-        "Content-Type": contentType,
-        "Cache-Control": "private, max-age=600",
+        ...commonHeaders,
+        "Content-Length": String(totalSize),
       },
     });
   } catch (error) {

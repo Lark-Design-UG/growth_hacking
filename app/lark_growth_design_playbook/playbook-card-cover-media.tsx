@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getHeroParametricGradient } from "@/lib/hero-parametric-gradient";
 import { isPlaybookCoverImageEnabled } from "@/lib/playbook-data-source";
 
 type AttachmentLike = {
@@ -11,10 +10,18 @@ type AttachmentLike = {
   name?: string;
   type?: string;
   file_token?: string;
+  file?: {
+    url?: string;
+    tmp_url?: string;
+    token?: string;
+    name?: string;
+    type?: string;
+  };
 };
 
 const MOTION_FIELD_KEYS = ["Motion", "motion", "MOTION"] as const;
 const COVER_FIELD_KEYS = ["Cover", "cover", "COVER"] as const;
+const BG_STATIC_FIELD_KEYS = ["bg_static", "BgStatic", "BG_STATIC", "bgStatic"] as const;
 
 function pickRawField(
   fields: Record<string, unknown>,
@@ -113,14 +120,70 @@ function driveMediasProxySrcFromAttachmentRaw(raw: unknown): string | null {
   return null;
 }
 
-/** 供列表用：Motion 在 `<video src>` 上可用的地址（与 Cover 同源代理逻辑） */
-export function motionAttachmentUrlFromFields(fields: {
+export type MotionSource = {
+  src: string;
+  type?: string;
+};
+
+function sourceTypeFromAttachment(att: AttachmentLike): string | undefined {
+  const t = att.type || att.file?.type;
+  if (typeof t === "string" && t.trim().length > 0) return t.trim().toLowerCase();
+  const n = att.name || att.file?.name || "";
+  const lower = n.toLowerCase();
+  if (lower.endsWith(".mp4")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  return undefined;
+}
+
+/** 供列表用：Motion 多格式 `<source>`；优先 mp4，再 webm，再其它。 */
+export function motionAttachmentSourcesFromFields(fields: {
   Motion?: AttachmentLike[] | null;
   motion?: AttachmentLike[] | null;
   [key: string]: unknown;
-}): string | null {
+}): MotionSource[] {
   const { raw } = pickRawMotion(fields as Record<string, unknown>);
-  return driveMediasProxySrcFromAttachmentRaw(raw);
+  if (typeof raw === "string" && /^https?:\/\//i.test(raw.trim())) {
+    const src = driveMediasProxySrcFromAttachmentRaw(raw);
+    if (!src) return [];
+    const lower = src.toLowerCase();
+    const type = lower.includes(".mp4")
+      ? "video/mp4"
+      : lower.includes(".webm")
+        ? "video/webm"
+        : undefined;
+    return [{ src, type }];
+  }
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+
+  const out: MotionSource[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const att = row as AttachmentLike;
+    const src = driveMediasProxySrcFromAttachmentRaw([att]);
+    if (!src) continue;
+    out.push({ src, type: sourceTypeFromAttachment(att) });
+  }
+
+  const deduped: MotionSource[] = [];
+  const seen = new Set<string>();
+  for (const s of out) {
+    const k = `${s.src}__${s.type ?? ""}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    deduped.push(s);
+  }
+
+  deduped.sort((a, b) => {
+    const rank = (t?: string) => {
+      const x = (t || "").toLowerCase();
+      if (x.includes("video/mp4")) return 0;
+      if (x.includes("video/webm")) return 1;
+      return 2;
+    };
+    return rank(a.type) - rank(b.type);
+  });
+  return deduped;
 }
 
 /** 供列表用：Cover 首张图在 `<img src>` 上可用的地址 */
@@ -130,6 +193,15 @@ export function coverAttachmentUrlFromFields(fields: {
   [key: string]: unknown;
 }): string | null {
   const { raw } = pickRawField(fields as Record<string, unknown>, COVER_FIELD_KEYS);
+  return driveMediasProxySrcFromAttachmentRaw(raw);
+}
+
+/** 供列表兜底背景：bg_static 首张图在 `<img/background-image>` 上可用地址 */
+export function bgStaticAttachmentUrlFromFields(fields: {
+  bg_static?: AttachmentLike[] | null;
+  [key: string]: unknown;
+}): string | null {
+  const { raw } = pickRawField(fields as Record<string, unknown>, BG_STATIC_FIELD_KEYS);
   return driveMediasProxySrcFromAttachmentRaw(raw);
 }
 
@@ -158,7 +230,7 @@ export function peekMotionField(fields: Record<string, unknown>): {
     hasKey: true,
     keyUsed: key,
     rawSummary,
-    url: driveMediasProxySrcFromAttachmentRaw(raw),
+    url: motionAttachmentSourcesFromFields(fields)[0]?.src ?? null,
   };
 }
 
@@ -171,7 +243,8 @@ function playbookDebugEnabled(): boolean {
 
 type PlaybookCardCoverMediaProps = {
   coverUrl: string | null;
-  motionUrl: string | null;
+  motionSources: MotionSource[];
+  staticBgUrl?: string | null;
   /** 底图参数化渐变：请传 `heroGradientSeedForRecord(item)`（以多维表格 Slug 列为主种子）。 */
   seed: string;
   reduceMotion: boolean;
@@ -188,20 +261,36 @@ type VideoPhase = "idle" | "loaded" | "error";
  */
 export function PlaybookCardCoverMedia({
   coverUrl,
-  motionUrl,
+  motionSources,
+  staticBgUrl,
   seed,
   reduceMotion,
   recordId,
 }: PlaybookCardCoverMediaProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const rewindRafRef = useRef<number | null>(null);
+  const [isSafari, setIsSafari] = useState(false);
   const [phase, setPhase] = useState<VideoPhase>("idle");
   const [coverBroken, setCoverBroken] = useState(false);
   const debug = playbookDebugEnabled();
 
   const coverDisplayOn = isPlaybookCoverImageEnabled();
   const hasCover = coverDisplayOn && Boolean(coverUrl) && !coverBroken;
-  const hasMotion = Boolean(motionUrl);
-  const coverFadesOnHoverToRevealMotion = hasCover && hasMotion;
+  const hasMotion = motionSources.length > 0;
+  const motionUrl = motionSources[0]?.src ?? null;
+  const coverFadesOnHoverToRevealMotion =
+    hasCover && hasMotion && !reduceMotion && phase === "loaded";
+  const autoplayWithoutCover = false;
+
+  useEffect(() => {
+    if (typeof navigator === "undefined") return;
+    const ua = navigator.userAgent;
+    // Safari: 包含 Safari 但不包含 Chrome/Chromium/Android。
+    const safari =
+      /Safari/i.test(ua) &&
+      !/Chrome|CriOS|Chromium|Android/i.test(ua);
+    setIsSafari(safari);
+  }, []);
 
   useEffect(() => {
     setPhase("idle");
@@ -220,30 +309,89 @@ export function PlaybookCardCoverMedia({
     }
   }, [debug, motionUrl, recordId]);
 
+  useEffect(() => {
+    return () => {
+      if (rewindRafRef.current != null) {
+        cancelAnimationFrame(rewindRafRef.current);
+        rewindRafRef.current = null;
+      }
+    };
+  }, []);
+
   const onEnter = useCallback(() => {
     if (reduceMotion || !motionUrl) return;
     const v = videoRef.current;
     if (!v) return;
+    if (rewindRafRef.current != null) {
+      cancelAnimationFrame(rewindRafRef.current);
+      rewindRafRef.current = null;
+    }
+    if (isSafari) v.playbackRate = 1;
     void v.play().catch((e) => {
       console.warn("[Playbook Motion video] play() 失败", recordId, e);
     });
-  }, [motionUrl, reduceMotion, recordId]);
+  }, [motionUrl, reduceMotion, recordId, isSafari]);
 
   const onLeave = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
-    v.pause();
-    try {
-      v.currentTime = 0;
-    } catch {
-      /* ignore */
+    if (rewindRafRef.current != null) {
+      cancelAnimationFrame(rewindRafRef.current);
+      rewindRafRef.current = null;
     }
+    v.pause();
+    const from = Math.max(0, v.currentTime || 0);
+    if (from <= 0.001) {
+      try {
+        v.currentTime = 0;
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    const durationMs = Math.min(1200, Math.max(320, from * 560));
+    const startedAt = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - startedAt) / durationMs);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const t = from * (1 - eased);
+      try {
+        v.currentTime = t;
+      } catch {
+        rewindRafRef.current = null;
+        return;
+      }
+      if (p < 1) {
+        rewindRafRef.current = requestAnimationFrame(tick);
+      } else {
+        try {
+          v.currentTime = 0;
+        } catch {
+          /* ignore */
+        }
+        rewindRafRef.current = null;
+      }
+    };
+    rewindRafRef.current = requestAnimationFrame(tick);
   }, []);
 
   const onVideoLoaded = useCallback(() => {
     setPhase("loaded");
+    if (isSafari && !hasCover && !reduceMotion) {
+      const v = videoRef.current;
+      if (v) {
+        void v
+          .play()
+          .then(() => {
+            v.pause();
+          })
+          .catch(() => {
+            /* ignore safari warm-up failures */
+          });
+      }
+    }
     if (debug) console.info("[Playbook Motion video] loadeddata", recordId);
-  }, [debug, recordId]);
+  }, [debug, recordId, isSafari, hasCover, reduceMotion]);
 
   const onVideoError = useCallback(() => {
     setPhase("error");
@@ -254,8 +402,6 @@ export function PlaybookCardCoverMedia({
       error: v?.error,
     });
   }, [motionUrl, recordId]);
-
-  const fallbackBg = reduceMotion ? "#1c1917" : getHeroParametricGradient(seed);
 
   const dataMotion = !motionUrl ? "absent" : phase === "error" ? "error" : phase === "loaded" ? "ready" : "present";
   const dataCover = !coverDisplayOn
@@ -296,21 +442,34 @@ export function PlaybookCardCoverMedia({
       <div
         className="pointer-events-none absolute inset-0 z-0 transition-[filter] duration-500 ease-[cubic-bezier(0.33,1,0.68,1)] group-hover:brightness-[1.05] group-hover:saturate-[1.06]"
         aria-hidden
-        style={{ background: fallbackBg }}
+        style={{
+          backgroundColor: "#e7e5e4",
+          backgroundImage: staticBgUrl ? `url('${staticBgUrl}')` : "none",
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+        }}
       />
-      {motionUrl ? (
+      {hasMotion ? (
         <video
           ref={videoRef}
-          className="pointer-events-none absolute inset-0 z-[1] h-full w-full object-cover opacity-100"
-          src={motionUrl}
+          className={`pointer-events-none absolute inset-0 z-[1] h-full w-full object-cover transition-opacity duration-200 ${
+            !hasCover && phase !== "loaded" ? "opacity-0" : "opacity-100"
+          }`}
           muted
           playsInline
+          autoPlay={autoplayWithoutCover}
           loop
-          preload="metadata"
+          preload="auto"
           aria-hidden
           onLoadedData={onVideoLoaded}
+          onCanPlay={onVideoLoaded}
           onError={onVideoError}
-        />
+        >
+          {motionSources.map((source) => (
+            <source key={`${source.src}__${source.type ?? "auto"}`} src={source.src} type={source.type} />
+          ))}
+        </video>
       ) : null}
       {coverDisplayOn && coverUrl && !coverBroken ? (
         <img

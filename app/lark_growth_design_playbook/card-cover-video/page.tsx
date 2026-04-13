@@ -5,7 +5,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { mountPlaybookHeightmapP5 } from "@/app/lark_growth_design_playbook/playbook-heightmap-p5-mount";
 import { getPlaybookAppToken, getPlaybookTableId } from "@/lib/playbook-data-source";
-import { heroGradientSeedForRecord, playbookSlugFromFields } from "@/lib/hero-parametric-gradient";
+import {
+  heroGradientSeedForRecord,
+  playbookSlugFromFields,
+  themeHexesFromFields,
+} from "@/lib/hero-parametric-gradient";
 
 type BaseRecord = {
   record_id: string;
@@ -26,8 +30,17 @@ type BaseData = {
 const APP_TOKEN = getPlaybookAppToken();
 const TABLE_ID = getPlaybookTableId();
 
-function pickVideoMimeType(): string | undefined {
-  const candidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+type ExportFormat = "auto" | "mp4" | "webm";
+
+function pickVideoMimeType(format: ExportFormat): string | undefined {
+  const mp4Candidates = ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4;codecs=avc1", "video/mp4"];
+  const webmCandidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+  const candidates =
+    format === "mp4"
+      ? mp4Candidates
+      : format === "webm"
+        ? webmCandidates
+        : [...mp4Candidates, ...webmCandidates];
   for (const c of candidates) {
     if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(c)) return c;
   }
@@ -37,6 +50,13 @@ function pickVideoMimeType(): string | undefined {
 function safeFileSlug(record: BaseRecord): string {
   const raw = playbookSlugFromFields(record.fields) || record.fields.Title?.trim() || record.record_id;
   return raw.replace(/[^\w\u4e00-\u9fff-]+/g, "_").slice(0, 80);
+}
+
+function randomSeedToken(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export default function CardCoverVideoPage() {
@@ -56,11 +76,21 @@ export default function CardCoverVideoPage() {
     () => (selected ? heroGradientSeedForRecord(selected) : ""),
     [selected],
   );
+  const [overrideSeed, setOverrideSeed] = useState<string | null>(null);
+  const effectiveSeed = overrideSeed ?? seed;
+  const themeHexes = useMemo(
+    () =>
+      selected ? themeHexesFromFields(selected.fields as Record<string, unknown>) : [],
+    [selected],
+  );
+  const themeHex = themeHexes[0] ?? null;
+  const themeAccentHexes = themeHexes.slice(1);
 
   const [outW, setOutW] = useState(720);
   const [outH, setOutH] = useState(720);
   const [durationSec, setDurationSec] = useState(6);
   const [fps, setFps] = useState(24);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("auto");
 
   const [log, setLog] = useState("");
   const [recording, setRecording] = useState(false);
@@ -95,34 +125,44 @@ export default function CardCoverVideoPage() {
     setSelectedId(data.items[0]!.record_id);
   }, [data, selectedId]);
 
+  useEffect(() => {
+    setOverrideSeed(null);
+  }, [selectedId]);
+
   /** 挂载 / 切换 seed 或输出尺寸 */
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || !seed) return undefined;
+    if (!host || !effectiveSeed) return undefined;
     mountRef.current?.remove();
     mountRef.current = null;
     host.innerHTML = "";
-    const m = mountPlaybookHeightmapP5(host, seed, {
+    const m = mountPlaybookHeightmapP5(host, effectiveSeed, {
       width: outW,
       height: outH,
       preserveDrawingBuffer: true,
+      themeBaseHex: themeHex,
+      themeAccentHexes,
     });
     mountRef.current = m;
     return () => {
       m.remove();
       if (mountRef.current === m) mountRef.current = null;
     };
-  }, [seed, outW, outH]);
+  }, [effectiveSeed, themeHex, themeAccentHexes, outW, outH]);
 
   const appendLog = useCallback((line: string) => {
     setLog((prev) => (prev ? `${prev}\n${line}` : line));
   }, []);
 
-  const recordCurrentToBlob = useCallback(async (): Promise<Blob> => {
+  const recordCurrentToBlob = useCallback(async (): Promise<{ blob: Blob; ext: "mp4" | "webm"; mimeBase: string }> => {
     const canvas = mountRef.current?.getCanvas();
     if (!canvas) throw new Error("画布未就绪");
-    const mime = pickVideoMimeType();
-    if (!mime) throw new Error("当前浏览器不支持 WebM 录制");
+    const mime = pickVideoMimeType(exportFormat);
+    if (!mime) {
+      if (exportFormat === "mp4") throw new Error("当前浏览器不支持 MP4(H.264) 录制");
+      if (exportFormat === "webm") throw new Error("当前浏览器不支持 WebM 录制");
+      throw new Error("当前浏览器不支持 MP4/WebM 录制");
+    }
 
     const stream = canvas.captureStream(fps);
     const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
@@ -138,8 +178,10 @@ export default function CardCoverVideoPage() {
     await new Promise((r) => setTimeout(r, Math.max(200, durationSec * 1000)));
     rec.stop();
     await stopped;
-    return new Blob(chunks, { type: mime.split(";")[0] || "video/webm" });
-  }, [durationSec, fps]);
+    const mimeBase = mime.split(";")[0] || "video/webm";
+    const ext: "mp4" | "webm" = mimeBase.includes("mp4") ? "mp4" : "webm";
+    return { blob: new Blob(chunks, { type: mimeBase }), ext, mimeBase };
+  }, [durationSec, exportFormat, fps]);
 
   const downloadBlob = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
@@ -155,10 +197,10 @@ export default function CardCoverVideoPage() {
     setRecording(true);
     setLog("");
     try {
-      const blob = await recordCurrentToBlob();
-      const name = `playbook-cover-${safeFileSlug(selected)}-${selected.record_id}.webm`;
+      const { blob, ext, mimeBase } = await recordCurrentToBlob();
+      const name = `playbook-cover-${safeFileSlug(selected)}-${selected.record_id}.${ext}`;
       downloadBlob(blob, name);
-      appendLog(`已下载：${name}`);
+      appendLog(`已下载：${name} (${mimeBase})`);
     } catch (e) {
       appendLog(String(e));
     } finally {
@@ -176,16 +218,30 @@ export default function CardCoverVideoPage() {
         setSelectedId(item.record_id);
         appendLog(`[${i + 1}/${data.items.length}] 准备 ${item.record_id} …`);
         await new Promise((r) => setTimeout(r, 900));
-        const blob = await recordCurrentToBlob();
-        const name = `playbook-cover-${safeFileSlug(item)}-${item.record_id}.webm`;
+        const { blob, ext, mimeBase } = await recordCurrentToBlob();
+        const name = `playbook-cover-${safeFileSlug(item)}-${item.record_id}.${ext}`;
         downloadBlob(blob, name);
-        appendLog(`已下载：${name}`);
+        appendLog(`已下载：${name} (${mimeBase})`);
       }
       appendLog("批量完成。");
     } catch (e) {
       appendLog(String(e));
     } finally {
       setBatchRunning(false);
+    }
+  };
+
+  const onRegenerateSeed = () => {
+    setOverrideSeed(randomSeedToken());
+  };
+
+  const onCopySeed = async () => {
+    if (!effectiveSeed) return;
+    try {
+      await navigator.clipboard.writeText(effectiveSeed);
+      appendLog(`已复制 seed：${effectiveSeed}`);
+    } catch (e) {
+      appendLog(`复制失败：${String(e)}`);
     }
   };
 
@@ -200,8 +256,12 @@ export default function CardCoverVideoPage() {
           </p>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight">卡片封面视频（p5 WebGL）</h1>
           <p className="mt-2 max-w-3xl text-sm text-stone-600">
-            使用与首页相同的高度图 shader，按设定分辨率与时长导出 <code className="rounded bg-stone-200/80 px-1">.webm</code>。
-            依赖浏览器 <code className="rounded bg-stone-200/80 px-1">canvas.captureStream</code> 与 WebM；若 Safari 不支持请换 Chrome。
+            使用与首页相同的高度图 shader，按设定分辨率与时长导出
+            <code className="mx-1 rounded bg-stone-200/80 px-1">.mp4</code>
+            或
+            <code className="mx-1 rounded bg-stone-200/80 px-1">.webm</code>。
+            依赖浏览器 <code className="rounded bg-stone-200/80 px-1">canvas.captureStream</code> 与
+            <code className="mx-1 rounded bg-stone-200/80 px-1">MediaRecorder</code> 能力。
           </p>
         </header>
 
@@ -229,6 +289,22 @@ export default function CardCoverVideoPage() {
                   className="rounded-lg bg-stone-900 px-4 py-2.5 text-sm font-medium text-white transition-opacity disabled:opacity-40"
                 >
                   {recording ? "录制中…" : "录制当前并下载"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!selected}
+                  onClick={onRegenerateSeed}
+                  className="rounded-lg border border-stone-300 bg-white px-4 py-2.5 text-sm font-medium text-stone-800 transition-opacity disabled:opacity-40"
+                >
+                  重新生成
+                </button>
+                <button
+                  type="button"
+                  disabled={!effectiveSeed}
+                  onClick={() => void onCopySeed()}
+                  className="rounded-lg border border-stone-300 bg-white px-4 py-2.5 text-sm font-medium text-stone-800 transition-opacity disabled:opacity-40"
+                >
+                  复制 Seed
                 </button>
                 <button
                   type="button"
@@ -295,6 +371,19 @@ export default function CardCoverVideoPage() {
                     />
                   </label>
                   <label className="text-xs text-stone-600">
+                    导出格式
+                    <select
+                      disabled={recording || batchRunning}
+                      value={exportFormat}
+                      onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+                      className="mt-1 w-full rounded border border-stone-300 bg-white px-2 py-1.5 text-sm"
+                    >
+                      <option value="auto">自动（优先 MP4）</option>
+                      <option value="mp4">MP4 (H.264)</option>
+                      <option value="webm">WebM</option>
+                    </select>
+                  </label>
+                  <label className="text-xs text-stone-600">
                     时长（秒）
                     <input
                       type="number"
@@ -322,7 +411,7 @@ export default function CardCoverVideoPage() {
                 </div>
                 <p className="mt-3 text-xs text-stone-500">
                   当前 seed（与首页卡片一致）：<br />
-                  <code className="mt-1 block break-all text-[11px] text-stone-700">{seed || "—"}</code>
+                  <code className="mt-1 block break-all text-[11px] text-stone-700">{effectiveSeed || "—"}</code>
                 </p>
               </div>
             </aside>

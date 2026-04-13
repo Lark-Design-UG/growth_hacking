@@ -3,6 +3,8 @@
  * 原理：噪声值 h∈[0,1] → 在色标上取色，与 OpenAI 早期视觉里 heightmap + color ramp 一致。
  */
 
+import { baseHueFromSeedAndTheme } from "@/lib/hero-parametric-gradient";
+
 function hash32(seed: string): number {
   let hash = 0;
   for (let i = 0; i < seed.length; i += 1) {
@@ -53,12 +55,28 @@ function linearToSrgbByte(c: number): number {
 export type HeightmapColorStop = { t: number; rgb: [number, number, number] };
 
 /** 生成已按 t 排序的色标 stop（首尾固定 0 / 1）。 */
-export function heroHeightmapStopsFromSeed(seed: string): HeightmapColorStop[] {
+export function heroHeightmapStopsFromSeed(
+  seed: string,
+  themeBaseHex?: string | null,
+  themeAccentHexes: string[] = [],
+): HeightmapColorStop[] {
   const rand = createSeededRandom(`${seed}:heightmap-stops`);
   const h0 = hash32(seed);
-  const baseHue = h0 % 360;
+  const baseHue = baseHueFromSeedAndTheme(seed, themeBaseHex);
   const step1 = 18 + ((h0 >> 6) % 28);
   const step2 = 44 + ((h0 >> 12) % 36);
+  const themeHue1 = themeAccentHexes[0]
+    ? baseHueFromSeedAndTheme(seed, themeAccentHexes[0])
+    : null;
+  const themeHue2 = themeAccentHexes[1]
+    ? baseHueFromSeedAndTheme(seed, themeAccentHexes[1])
+    : null;
+  const huePalette = [
+    baseHue,
+    themeHue1 ?? (baseHue + step1) % 360,
+    themeHue2 ?? (baseHue + step2) % 360,
+    (baseHue + 92 + ((h0 >> 3) % 36)) % 360,
+  ];
 
   const nInner = 5;
   const innerTs: number[] = [];
@@ -78,7 +96,7 @@ export function heroHeightmapStopsFromSeed(seed: string): HeightmapColorStop[] {
   });
 
   for (let i = 0; i < nInner; i += 1) {
-    const spanHue = i % 3 === 0 ? baseHue : i % 3 === 1 ? (baseHue + step1) % 360 : (baseHue + step2) % 360;
+    const spanHue = huePalette[i % huePalette.length]!;
     const jitter = (rand() - 0.5) * 28;
     const hue = (spanHue + jitter + 360) % 360;
     const sat = midSat + (rand() - 0.5) * 16;
@@ -132,8 +150,13 @@ function sampleStopsRgb(stops: HeightmapColorStop[], t: number): [number, number
 }
 
 /** 横向 1D 渐变条 RGBA 像素，宽度 width，高度 1。 */
-export function heroHeightmapRampPixels(seed: string, width = 256): Uint8ClampedArray {
-  const stops = heroHeightmapStopsFromSeed(seed);
+export function heroHeightmapRampPixels(
+  seed: string,
+  width = 256,
+  themeBaseHex?: string | null,
+  themeAccentHexes: string[] = [],
+): Uint8ClampedArray {
+  const stops = heroHeightmapStopsFromSeed(seed, themeBaseHex, themeAccentHexes);
   const out = new Uint8ClampedArray(width * 4);
   for (let i = 0; i < width; i += 1) {
     const t = width <= 1 ? 0 : i / (width - 1);

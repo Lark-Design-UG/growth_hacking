@@ -13,10 +13,14 @@ import {
   type SetStateAction,
 } from "react";
 
-import { heroGradientSeedForRecord } from "@/lib/hero-parametric-gradient";
 import {
+  heroGradientSeedForRecord,
+  themeHexesFromFields,
+} from "@/lib/hero-parametric-gradient";
+import {
+  bgStaticAttachmentUrlFromFields,
   coverAttachmentUrlFromFields,
-  motionAttachmentUrlFromFields,
+  motionAttachmentSourcesFromFields,
   PlaybookCardCoverMedia,
 } from "@/app/lark_growth_design_playbook/playbook-card-cover-media";
 import { PlaybookFullscreenPathTracers } from "@/app/lark_growth_design_playbook/playbook-fullscreen-path-tracers";
@@ -71,6 +75,11 @@ type BaseData = {
   has_more: boolean;
 };
 
+function isPublishedRecord(item: BaseRecord): boolean {
+  const raw = item.fields?.Status ?? item.fields?.status ?? item.fields?.STATUS;
+  return typeof raw === "string" && raw.trim().toLowerCase() === "pub";
+}
+
 const APP_TOKEN = getPlaybookAppToken();
 const TABLE_ID = getPlaybookTableId();
 
@@ -101,8 +110,8 @@ function readHeroSpVisual(anim: HeroSnapAnim, spRef: { current: number }, now: n
 const HERO_CARD_GAP_PX = 12;
 /** 卡片顶相对 Hero 外包层的 offset（px），与 `heroLayout.top` 一致；0 表示贴齐内容区顶边 */
 const HERO_LOGO_CLEARANCE_PX = 0;
-/** 与 Tailwind max-w-7xl 对齐（80rem 按 16px） */
-const HERO_MAX_CONTENT_PX = 80 * 16;
+/** Hero 外框最大宽（90rem 按 16px），比正文区更宽以贴近横幅布局 */
+const HERO_MAX_CONTENT_PX = 90 * 16;
 
 /**
  * 与 `<main class="mx-auto max-w-7xl px-6 sm:px-8 lg:px-8">` 内容区同宽。
@@ -183,7 +192,6 @@ type PlaybookHeroSlidesCardChromeProps = {
   activeHeroSlide: number;
   stripEmojiFn: (value: string) => string;
   setActiveHeroSlide: Dispatch<SetStateAction<number>>;
-  onToggleLayout: () => void;
 };
 
 function PlaybookHeroSlidesCardChrome({
@@ -191,7 +199,6 @@ function PlaybookHeroSlidesCardChrome({
   activeHeroSlide,
   stripEmojiFn,
   setActiveHeroSlide,
-  onToggleLayout,
 }: PlaybookHeroSlidesCardChromeProps) {
   const goHeroRing = useCallback(
     (dir: -1 | 1) => {
@@ -213,52 +220,26 @@ function PlaybookHeroSlidesCardChrome({
     .filter(Boolean)
     .map((value) => stripEmojiFn(String(value)))
     .join(" ｜ ");
-  const copyHref = `/article/${currentSlide.fields.Slug || currentSlide.record_id}`;
+  const copyHref = `/article/${currentSlide.fields.Slug || currentSlide.record_id}?rid=${encodeURIComponent(currentSlide.record_id)}`;
 
   return (
     <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col">
       <div
-        role="navigation"
-        aria-label="Playbook"
-        className="relative z-20 flex w-full min-w-0 shrink-0 items-center px-4 pb-2 pt-2.5 text-white sm:px-5 sm:pb-2.5 sm:pt-3 lg:px-6 lg:pb-3 lg:pt-3.5"
+        className="relative min-h-0 flex-1 cursor-pointer"
+        onClick={() => goHeroRing(1)}
+        title="点击切换下一篇"
       >
-        <Link
-          href="/lark_growth_design_playbook"
-          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white/90"
-        >
-          <Image
-            src="/Lark%20Design.svg"
-            alt="Lark Design"
-            width={186}
-            height={38}
-            className="h-9 w-auto brightness-0 invert"
-            priority
-          />
-        </Link>
-        <p className="pointer-events-none absolute left-1/2 top-1/2 z-0 max-w-[min(100%-5rem,calc(100vw-6rem))] -translate-x-1/2 -translate-y-1/2 px-2 text-center text-[11px] font-semibold uppercase leading-snug tracking-wide text-white sm:max-w-[min(100%-6.5rem,40rem)] sm:text-xs md:text-sm">
-          Lark Growth Design Playbook
-        </p>
-        <button
-          type="button"
-          onClick={onToggleLayout}
-          className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-white/90 bg-white/10 text-white backdrop-blur-sm transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-white hover:bg-white/20"
-          aria-label="展开全屏"
-        >
-          <PlaybookCardFullscreenIcon className="size-[1.125rem]" />
-        </button>
-      </div>
-
-      <div className="relative min-h-0 flex-1">
         <div
-          className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-center px-4 pb-14 pt-2 sm:px-6 sm:pb-16 sm:pt-4"
+          className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-center px-2 pb-14 pt-2 sm:px-3 sm:pb-16 sm:pt-4 lg:px-4"
           aria-live="polite"
         >
           <div
             key={currentSlide.record_id}
-            className="playbook-hero-copy-swap pointer-events-auto max-w-4xl"
+            className="playbook-hero-copy-swap pointer-events-auto w-full text-center"
+            onClick={(e) => e.stopPropagation()}
           >
             {copyMeta ? (
-              <p className="mb-3 text-left text-xs font-medium uppercase tracking-wide text-white/75 sm:mb-4">
+              <p className="mb-3 text-center text-xs font-medium uppercase tracking-wide text-white/75 sm:mb-4">
                 {copyMeta}
               </p>
             ) : null}
@@ -270,77 +251,10 @@ function PlaybookHeroSlidesCardChrome({
               className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-900 transition-[opacity,transform] duration-200 ease-out hover:opacity-95 active:scale-[0.98] sm:mt-6 sm:px-5 sm:py-2.5"
             >
               立即阅读
-              <span aria-hidden className="translate-y-px">
-                &gt;
-              </span>
             </Link>
           </div>
         </div>
 
-        <nav
-          aria-label="篇目切换"
-          className="pointer-events-none absolute inset-y-0 right-2 z-30 flex items-center sm:right-3 lg:right-4"
-        >
-          <ol className="pointer-events-auto flex flex-col items-center gap-2.5 py-6">
-            {heroSlides.map((item, i) => {
-              const on = i === activeHeroSlide;
-              return (
-                <li key={item.record_id}>
-                  <button
-                    type="button"
-                    aria-label={`第 ${i + 1} 篇`}
-                    aria-current={on ? "true" : undefined}
-                    onClick={() => setActiveHeroSlide(i)}
-                    className={`block rounded-full transition-[height,width,background-color] duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] motion-reduce:transition-none ${
-                      on
-                        ? "h-7 w-[5px] border border-white/40 bg-white"
-                        : "h-2 w-2 bg-white/40 hover:bg-white/65"
-                    }`}
-                  />
-                </li>
-              );
-            })}
-          </ol>
-        </nav>
-
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-3 z-40 flex flex-row items-center justify-center gap-3 sm:bottom-4"
-          role="group"
-          aria-label="切换篇目"
-        >
-          <button
-            type="button"
-            aria-label="上一篇，在第一篇时回到最后一篇"
-            onClick={() => goHeroRing(-1)}
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/90 bg-transparent text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none sm:h-11 sm:w-11"
-          >
-            <svg viewBox="0 0 24 24" fill="none" className="size-5 shrink-0 sm:size-[22px]" aria-hidden>
-              <path
-                d="M7 14.5L12 9.5l5 5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            aria-label="下一篇，在最后一篇时回到第一篇"
-            onClick={() => goHeroRing(1)}
-            className="pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/90 bg-transparent text-white transition-colors duration-200 ease-out hover:border-white hover:bg-white/[0.06] motion-reduce:transition-none sm:h-11 sm:w-11"
-          >
-            <svg viewBox="0 0 24 24" fill="none" className="size-5 shrink-0 sm:size-[22px]" aria-hidden>
-              <path
-                d="M7 9.5L12 14.5l5-5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -468,7 +382,7 @@ function PlaybookHeroSlidesFullscreenChrome({
     .filter(Boolean)
     .map((value) => stripEmojiFn(String(value)))
     .join(" ｜ ");
-  const copyHref = `/article/${currentSlide.fields.Slug || currentSlide.record_id}`;
+  const copyHref = `/article/${currentSlide.fields.Slug || currentSlide.record_id}?rid=${encodeURIComponent(currentSlide.record_id)}`;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -635,39 +549,9 @@ function PlaybookHeroSlidesFullscreenChrome({
   );
 }
 
-function PlaybookHeroEmptyCardChrome({ onToggleLayout }: { onToggleLayout: () => void }) {
+function PlaybookHeroEmptyCardChrome() {
   return (
     <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col items-stretch">
-      <div
-        role="navigation"
-        aria-label="Playbook"
-        className="relative z-20 flex w-full min-w-0 shrink-0 items-center px-4 pb-2 pt-2.5 text-white sm:px-5 sm:pb-2.5 sm:pt-3 lg:px-6 lg:pb-3 lg:pt-3.5"
-      >
-        <Link
-          href="/lark_growth_design_playbook"
-          className="relative z-[1] flex shrink-0 items-center text-white outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white/90"
-        >
-          <Image
-            src="/Lark%20Design.svg"
-            alt="Lark Design"
-            width={186}
-            height={38}
-            className="h-9 w-auto brightness-0 invert"
-            priority
-          />
-        </Link>
-        <p className="pointer-events-none absolute left-1/2 top-1/2 z-0 max-w-[min(100%-5rem,calc(100vw-6rem))] -translate-x-1/2 -translate-y-1/2 px-2 text-center text-[11px] font-semibold uppercase leading-snug tracking-wide text-white sm:max-w-[min(100%-6.5rem,40rem)] sm:text-xs md:text-sm">
-          Lark Growth Design Playbook
-        </p>
-        <button
-          type="button"
-          onClick={onToggleLayout}
-          className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-white/90 bg-white/10 text-white backdrop-blur-sm transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-white hover:bg-white/20"
-          aria-label="展开全屏"
-        >
-          <PlaybookCardFullscreenIcon className="size-[1.125rem]" />
-        </button>
-      </div>
     </div>
   );
 }
@@ -736,21 +620,21 @@ export default function PlaybookPage() {
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [isFilterSticky, setIsFilterSticky] = useState(false);
   const [activeHeroSlide, setActiveHeroSlide] = useState(0);
-  const [heroSpDisplay, setHeroSpDisplay] = useState(0);
+  const [heroSpDisplay, setHeroSpDisplay] = useState(1);
   /** 与 heroSp 目标一致：全屏(0) 时锁整页滚动，卡片(1) 时恢复 */
-  const [heroWantsFullLayout, setHeroWantsFullLayout] = useState(true);
+  const [heroWantsFullLayout, setHeroWantsFullLayout] = useState(false);
   /** 全屏→卡片完成后递增，强制列表重挂载以重播 playbook-card-enter */
   const [cardGridRevealEpoch, setCardGridRevealEpoch] = useState(0);
   /** 正在过渡到卡片模式时隐藏列表，避免 Hero 动画期间先看到静态卡片 */
   const [cardGridAwaitingReveal, setCardGridAwaitingReveal] = useState(false);
   /** 全屏 / 卡片两套 Hero 控件：全屏→卡片在 snap 结束后切换；卡片→全屏在 snap 开始时切换以免宽度被 main 夹住 */
-  const [heroChromeSurface, setHeroChromeSurface] = useState<HeroChromeSurface>("fullscreen");
+  const [heroChromeSurface, setHeroChromeSurface] = useState<HeroChromeSurface>("card");
   const [heroChromeVisible, setHeroChromeVisible] = useState(true);
   const [heroChromeFadeMs, setHeroChromeFadeMs] = useState(HERO_SNAP_MS);
   /** 全屏↔卡片 outer 几何在跑 HERO_SNAP_MS 时：冻结 Hero shader，与列表卡片默认静止同一逻辑，避免形变过程中时间轴还在走 */
   const [heroSnapLayoutAnimating, setHeroSnapLayoutAnimating] = useState(false);
   const [viewportSize, setViewportSize] = useState({ w: 1200, h: 800 });
-  const heroSpDisplayRef = useRef(0);
+  const heroSpDisplayRef = useRef(1);
   const heroMotionReduceRef = useRef(false);
   /** WebGL 背景在 prefers-reduced-motion 时关闭，仅保留 CSS 渐变 */
   const [reduceHeroShaderMotion, setReduceHeroShaderMotion] = useState(false);
@@ -834,7 +718,14 @@ export default function PlaybookPage() {
       const result = await response.json();
 
       if (result.ok) {
-        setData(result.data);
+        const source = result.data as BaseData;
+        const publishedItems = (source.items ?? []).filter(isPublishedRecord);
+        setData({
+          ...source,
+          items: publishedItems,
+          total: publishedItems.length,
+          has_more: false,
+        });
       } else {
         setError(result.error);
       }
@@ -964,6 +855,14 @@ export default function PlaybookPage() {
       : null;
   const activeHeroBgSeed = activeHeroBgRecord ? heroGradientSeedForRecord(activeHeroBgRecord) : "";
   const heroShaderSeed = activeHeroBgRecord ? activeHeroBgSeed : "playbook-empty-hero";
+  const activeHeroThemeHexes = activeHeroBgRecord
+    ? themeHexesFromFields(activeHeroBgRecord.fields as Record<string, unknown>)
+    : [];
+  const activeHeroThemeHex = activeHeroThemeHexes[0] ?? null;
+  const activeHeroThemeAccentHexes = activeHeroThemeHexes.slice(1);
+  const showCardTopDebugControls =
+    typeof process !== "undefined" &&
+    (process.env.NEXT_PUBLIC_PLAYBOOK_DEBUG === "true" || process.env.NEXT_PUBLIC_PLAYBOOK_DEBUG === "1");
 
   const scrollPageLocked = heroSlides.length > 0 && heroWantsFullLayout;
 
@@ -1188,10 +1087,46 @@ export default function PlaybookPage() {
           >
             <div
               className={`relative z-40 w-full ${
-                playbookChromeFullscreen ? "" : "mx-auto max-w-7xl px-6 sm:px-8 lg:px-8"
+                playbookChromeFullscreen ? "" : "mx-auto max-w-[90rem] px-3 sm:px-4 lg:px-6"
               }`}
               style={{ paddingTop: `${heroLayout.top}px` }}
             >
+              {!playbookChromeFullscreen ? (
+                <div
+                  role="navigation"
+                  aria-label="Playbook"
+                  className="relative z-30 mt-6 mb-3 flex w-full min-w-0 items-center px-1 py-2 text-stone-900 sm:mb-4 sm:py-2.5"
+                >
+                  {showCardTopDebugControls ? (
+                    <Link
+                      href="/lark_growth_design_playbook"
+                      className="relative z-[1] flex shrink-0 items-center text-stone-900 outline-offset-4"
+                    >
+                      <Image
+                        src="/Lark%20Design.svg"
+                        alt="Lark Design"
+                        width={186}
+                        height={38}
+                        className="h-7 w-auto brightness-0"
+                        priority
+                      />
+                    </Link>
+                  ) : null}
+                  <p className="pointer-events-none absolute left-1/2 top-1/2 z-0 max-w-[min(100%-7rem,calc(100vw-8rem))] -translate-x-1/2 -translate-y-1/2 px-2 text-center text-[11px] font-semibold uppercase leading-snug tracking-wide text-stone-900 sm:max-w-[min(100%-9rem,44rem)] sm:text-xs md:text-sm">
+                    Lark Growth Design Playbook
+                  </p>
+                  {showCardTopDebugControls ? (
+                    <button
+                      type="button"
+                      onClick={toggleHeroLayout}
+                      className="relative z-[1] ml-auto inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-stone-900/30 bg-white text-stone-900 transition-[background-color,border-color,opacity] duration-200 ease-out hover:border-stone-900/45 hover:bg-stone-100"
+                      aria-label="展开全屏"
+                    >
+                      <PlaybookCardFullscreenIcon className="size-[1.125rem]" />
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <header
                 className={`relative overflow-hidden text-stone-900 ${heroShellBgTransparent ? "bg-transparent" : "bg-white"}`}
                 style={{
@@ -1200,7 +1135,7 @@ export default function PlaybookPage() {
                   marginRight: "auto",
                   width: `${heroLayout.outerW}px`,
                   height: `${heroLayout.outerH}px`,
-                  borderRadius: `0 0 ${heroLayout.radius}px ${heroLayout.radius}px`,
+                  borderRadius: `${heroLayout.radius}px`,
                   maxWidth: "100%",
                 }}
               >
@@ -1211,6 +1146,8 @@ export default function PlaybookPage() {
                     <PlaybookHeroShaderBackground
                       key={heroShaderSeed}
                       seed={heroShaderSeed}
+                      themeBaseHex={activeHeroThemeHex}
+                      themeAccentHexes={activeHeroThemeAccentHexes}
                       motionPaused={
                         !playbookChromeFullscreen || heroSnapLayoutAnimating
                       }
@@ -1306,7 +1243,6 @@ export default function PlaybookPage() {
                         activeHeroSlide={activeHeroSlide}
                         stripEmojiFn={stripEmoji}
                         setActiveHeroSlide={setActiveHeroSlide}
-                        onToggleLayout={toggleHeroLayout}
                       />
                     </div>
                   </div>
@@ -1319,7 +1255,7 @@ export default function PlaybookPage() {
                         transitionDuration: `${heroChromeFadeMs}ms`,
                       }}
                     >
-                      <PlaybookHeroEmptyCardChrome onToggleLayout={toggleHeroLayout} />
+                      <PlaybookHeroEmptyCardChrome />
                     </div>
                   </div>
                 )}
@@ -1338,71 +1274,65 @@ export default function PlaybookPage() {
               >
                 <div
                   ref={filterBarRef}
-                  className="sticky z-50 -mx-6 mb-12 bg-white/95 px-6 py-5 backdrop-blur sm:-mx-8 sm:px-8 sm:py-6 lg:mx-0 lg:px-0 lg:py-7"
+                  className="sticky z-50 -mx-6 bg-white px-6 py-3 sm:-mx-8 sm:px-8 sm:py-4 lg:mx-0 lg:px-0"
                   style={{ top: 0 }}
                 >
-                  <div className="relative flex flex-wrap items-center justify-center gap-x-8 gap-y-3">
-                    {isFilterSticky && (
-                      <div className="absolute left-0 top-1/2 hidden -translate-y-1/2 sm:block">
-                        <Image
-                          src="/Lark%20Design.svg"
-                          alt="Lark Design"
-                          width={124}
-                          height={24}
-                          className="h-6 w-auto brightness-0"
-                        />
+                  <div className="relative">
+                    <div className="overflow-x-auto pb-1">
+                      <div className="flex min-w-max items-center justify-between gap-8 border-b border-stone-200 text-sm">
+                        <div className="flex items-center gap-5">
+                          <button
+                            onClick={() => setSelectedCategory(null)}
+                            className={`-mb-px border-b-2 pb-2.5 transition-colors ${
+                              !selectedCategory
+                                ? "border-stone-900 font-semibold text-stone-900"
+                                : "border-transparent text-stone-500 hover:text-stone-900"
+                            }`}
+                          >
+                            All Categories
+                          </button>
+                          {getCategories().map((category) => (
+                            <button
+                              key={category}
+                              onClick={() => setSelectedCategory(category)}
+                              className={`-mb-px border-b-2 pb-2.5 transition-colors ${
+                                selectedCategory === category
+                                  ? "border-stone-900 font-semibold text-stone-900"
+                                  : "border-transparent text-stone-500 hover:text-stone-900"
+                              }`}
+                            >
+                              {stripEmoji(category)}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="flex items-center gap-2 pb-2.5 pl-2">
+                          <span className="text-xs uppercase tracking-wide text-stone-400">Region</span>
+                          <button
+                            onClick={() => setSelectedRegion(null)}
+                            className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
+                              !selectedRegion
+                                ? "bg-stone-100 text-stone-700"
+                                : "text-stone-400 hover:text-stone-700"
+                            }`}
+                          >
+                            All
+                          </button>
+                          {getRegions().map((region) => (
+                            <button
+                              key={region}
+                              onClick={() => setSelectedRegion(region)}
+                              className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
+                                selectedRegion === region
+                                  ? "bg-stone-100 text-stone-700"
+                                  : "text-stone-400 hover:text-stone-700"
+                              }`}
+                            >
+                              {stripEmoji(region)}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    )}
-                    <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm">
-                      <button
-                        onClick={() => setSelectedCategory(null)}
-                        className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
-                          !selectedCategory
-                            ? "font-semibold text-stone-900 underline underline-offset-4"
-                            : "text-stone-600 hover:text-stone-900"
-                        }`}
-                      >
-                        All Categories
-                      </button>
-                      {getCategories().map((category) => (
-                        <button
-                          key={category}
-                          onClick={() => setSelectedCategory(category)}
-                          className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
-                            selectedCategory === category
-                              ? "font-semibold text-stone-900 underline underline-offset-4"
-                              : "text-stone-600 hover:text-stone-900"
-                          }`}
-                        >
-                          {stripEmoji(category)}
-                        </button>
-                      ))}
-                    </div>
-                    <span className="text-stone-300">|</span>
-                    <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm">
-                      <button
-                        onClick={() => setSelectedRegion(null)}
-                        className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
-                          !selectedRegion
-                            ? "font-semibold text-stone-900 underline underline-offset-4"
-                            : "text-stone-600 hover:text-stone-900"
-                        }`}
-                      >
-                        All Regions
-                      </button>
-                      {getRegions().map((region) => (
-                        <button
-                          key={region}
-                          onClick={() => setSelectedRegion(region)}
-                          className={`text-sm transition-colors duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] ${
-                            selectedRegion === region
-                              ? "font-semibold text-stone-900 underline underline-offset-4"
-                              : "text-stone-600 hover:text-stone-900"
-                          }`}
-                        >
-                          {stripEmoji(region)}
-                        </button>
-                      ))}
                     </div>
                   </div>
                 </div>
@@ -1430,12 +1360,12 @@ export default function PlaybookPage() {
                       >
                         <div
                           key={cardGridRevealEpoch}
-                          className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3 lg:gap-7"
+                          className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4 lg:gap-6"
                         >
                           {visibleItems.map((item, i) => (
                             <Link
                               key={`${item.record_id}-${selectedCategory ?? "c"}-${selectedRegion ?? "r"}`}
-                              href={`/article/${item.fields.Slug || item.record_id}`}
+                              href={`/article/${item.fields.Slug || item.record_id}?rid=${encodeURIComponent(item.record_id)}`}
                               className="playbook-card-enter group block rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-900"
                               style={{
                                 animationDelay: `${Math.min(i, 24) * 64}ms`,
@@ -1444,7 +1374,8 @@ export default function PlaybookPage() {
                               <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl transition-transform duration-500 ease-[cubic-bezier(0.33,1,0.68,1)] will-change-transform group-hover:scale-[1.02]">
                                 <PlaybookCardCoverMedia
                                   coverUrl={coverAttachmentUrlFromFields(item.fields)}
-                                  motionUrl={motionAttachmentUrlFromFields(item.fields)}
+                                  motionSources={motionAttachmentSourcesFromFields(item.fields)}
+                                  staticBgUrl={bgStaticAttachmentUrlFromFields(item.fields)}
                                   seed={heroGradientSeedForRecord(item)}
                                   reduceMotion={reduceHeroShaderMotion}
                                   recordId={item.record_id}
@@ -1484,12 +1415,6 @@ export default function PlaybookPage() {
             <div className="mx-auto flex max-w-7xl flex-col gap-2 px-6 py-6 text-sm text-stone-500 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-6 sm:px-8 lg:px-8">
               <p>© {new Date().getFullYear()} Lark Growth Design Playbook</p>
               <p>Built for growth stories and design insights.</p>
-              <Link
-                href="/lark_growth_design_playbook/card-cover-video"
-                className="text-stone-600 underline-offset-4 hover:text-stone-900 hover:underline"
-              >
-                封面视频导出（工具）
-              </Link>
             </div>
           </footer>
         </div>

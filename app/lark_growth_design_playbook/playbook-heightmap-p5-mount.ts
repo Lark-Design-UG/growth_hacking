@@ -46,10 +46,16 @@ export const PLAYBOOK_COVER_EXPORT_HEIGHTMAP: PlaybookHeightmapP5Config = {
   grain: 0.03,
 };
 
-function buildRampGraphics(p: P5Instance, seed: string, rampWidth: number): P5GraphicsPixels {
+function buildRampGraphics(
+  p: P5Instance,
+  seed: string,
+  rampWidth: number,
+  themeBaseHex?: string | null,
+  themeAccentHexes: string[] = [],
+): P5GraphicsPixels {
   const g = p.createGraphics(rampWidth, 1);
   g.pixelDensity(1);
-  const px = heroHeightmapRampPixels(seed, rampWidth);
+  const px = heroHeightmapRampPixels(seed, rampWidth, themeBaseHex, themeAccentHexes);
   g.loadPixels();
   for (let i = 0; i < px.length; i += 1) {
     g.pixels[i] = px[i];
@@ -73,6 +79,10 @@ export function mountPlaybookHeightmapP5(
     /** 默认 true，供 MediaRecorder / captureStream */
     preserveDrawingBuffer?: boolean;
     cfg?: Partial<PlaybookHeightmapP5Config>;
+    /** 与首页 Hero 一致：多维表 theme 基准色 */
+    themeBaseHex?: string | null;
+    /** 与首页 Hero 一致：多维表 theme 辅助色 */
+    themeAccentHexes?: string[];
   },
 ): MountPlaybookHeightmapP5Result {
   const cfg: PlaybookHeightmapP5Config = { ...PLAYBOOK_COVER_EXPORT_HEIGHTMAP, ...opts.cfg };
@@ -97,7 +107,13 @@ export function mountPlaybookHeightmapP5(
       }
       p.pixelDensity(cfg.pixelDensity);
       p.noStroke();
-      ramp = buildRampGraphics(p, seed, cfg.rampWidth);
+      ramp = buildRampGraphics(
+        p,
+        seed,
+        cfg.rampWidth,
+        opts.themeBaseHex,
+        opts.themeAccentHexes ?? [],
+      );
       bgShader = p.createShader(heightmapRampVert, heightmapRampFrag) as P5ShaderUniforms;
     };
 
