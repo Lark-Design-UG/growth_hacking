@@ -65,7 +65,7 @@ type BaseRecord = {
     Slug?: string;
     slug?: string;
     Status?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   };
 };
 
@@ -107,7 +107,6 @@ function readHeroSpVisual(anim: HeroSnapAnim, spRef: { current: number }, now: n
   return anim.from + (anim.to - anim.from) * p;
 }
 
-const HERO_CARD_GAP_PX = 12;
 /** 卡片顶相对 Hero 外包层的 offset（px），与 `heroLayout.top` 一致；0 表示贴齐内容区顶边 */
 const HERO_LOGO_CLEARANCE_PX = 0;
 /** Hero 外框最大宽（90rem 按 16px），比正文区更宽以贴近横幅布局 */
@@ -618,7 +617,6 @@ export default function PlaybookPage() {
   const splashDismissedRef = useRef(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
-  const [isFilterSticky, setIsFilterSticky] = useState(false);
   const [activeHeroSlide, setActiveHeroSlide] = useState(0);
   const [heroSpDisplay, setHeroSpDisplay] = useState(1);
   /** 与 heroSp 目标一致：全屏(0) 时锁整页滚动，卡片(1) 时恢复 */
@@ -701,7 +699,7 @@ export default function PlaybookPage() {
     setLoading(false);
   }, []);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     splashDismissedRef.current = false;
     setLoading(true);
     setSplashVisible(true);
@@ -749,7 +747,7 @@ export default function PlaybookPage() {
         });
       }
     }
-  };
+  }, [dismissSplash]);
 
   /** 请求进行中：每帧微增 lineRatio，三条 stroke 同步延伸 */
   useEffect(() => {
@@ -803,8 +801,8 @@ export default function PlaybookPage() {
   }, [sealPhase, lineRatio, splashVisible, dismissSplash]);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    void fetchData();
+  }, [fetchData]);
 
   const getCategories = () => {
     if (!data?.items) return [];
@@ -946,32 +944,6 @@ export default function PlaybookPage() {
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
   }, []);
-
-  useEffect(() => {
-    let raf = 0;
-
-    const tick = () => {
-      if (filterBarRef.current) {
-        const { top } = filterBarRef.current.getBoundingClientRect();
-        /** 筛选条 `top:0` 吸顶；条顶贴近视口顶时显示收缩态 Logo */
-        setIsFilterSticky(top <= 6);
-      }
-    };
-
-    const onScroll = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(tick);
-    };
-
-    tick();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", tick);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", tick);
-    };
-  }, [loading]);
 
   const heroSp = heroSpDisplay;
   const heroLayout = computeHeroLayout(viewportSize.w, viewportSize.h, heroSp);
@@ -1376,7 +1348,6 @@ export default function PlaybookPage() {
                                   coverUrl={coverAttachmentUrlFromFields(item.fields)}
                                   motionSources={motionAttachmentSourcesFromFields(item.fields)}
                                   staticBgUrl={bgStaticAttachmentUrlFromFields(item.fields)}
-                                  seed={heroGradientSeedForRecord(item)}
                                   reduceMotion={reduceHeroShaderMotion}
                                   recordId={item.record_id}
                                 />

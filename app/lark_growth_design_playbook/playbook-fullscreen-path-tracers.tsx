@@ -66,7 +66,6 @@ function cycleRibbonRange(
   const sum = moveF + exitF + pauseF;
   const m = moveF / sum;
   const x = exitF / sum;
-  const pa = pauseF / sum;
 
   if (t01 < m) {
     const u = t01 / m;

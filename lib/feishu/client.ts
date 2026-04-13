@@ -1,6 +1,6 @@
 import { getTenantAccessToken } from "./auth";
 
-type FeishuResponse<T = any> = {
+type FeishuResponse<T = unknown> = {
   code: number;
   msg: string;
   data?: T;
@@ -31,7 +31,7 @@ function fetchWithTimeout(
   }).finally(() => clearTimeout(timeoutId));
 }
 
-export async function feishuRequest<T = any>(
+export async function feishuRequest<T = unknown>(
   url: string,
   options: RequestInit = {},
   timeout = 10000

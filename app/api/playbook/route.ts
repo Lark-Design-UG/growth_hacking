@@ -1,7 +1,12 @@
 import { getBaseRecords } from "@/lib/feishu/client";
 import { getPlaybookAppToken, getPlaybookTableId } from "@/lib/playbook-data-source";
 
-function isPublishedRecord(item: any): boolean {
+type PlaybookRecord = {
+  record_id: string;
+  fields?: Record<string, unknown>;
+};
+
+function isPublishedRecord(item: PlaybookRecord): boolean {
   const raw = item?.fields?.Status ?? item?.fields?.status ?? item?.fields?.STATUS;
   if (typeof raw !== "string") return false;
   return raw.trim().toLowerCase() === "pub";
@@ -14,7 +19,7 @@ export async function GET(request: Request) {
     const recordId = searchParams.get("recordId");
 
     const data = await getBaseRecords(getPlaybookAppToken(), getPlaybookTableId());
-    const allItems = (data as { items?: any[] })?.items || [];
+    const allItems = (data as { items?: PlaybookRecord[] })?.items || [];
     const publishedItems = allItems.filter(isPublishedRecord);
 
     if (!slug && !recordId) {
@@ -23,8 +28,8 @@ export async function GET(request: Request) {
 
     const items = publishedItems;
     const record =
-      items.find((item: any) => recordId && item.record_id === recordId) ||
-      items.find((item: any) => {
+      items.find((item: PlaybookRecord) => recordId && item.record_id === recordId) ||
+      items.find((item: PlaybookRecord) => {
         if (!slug) return false;
         const s = item.fields?.Slug ?? item.fields?.slug ?? item.fields?.SLUG;
         return typeof s === "string" && s.trim() === slug;

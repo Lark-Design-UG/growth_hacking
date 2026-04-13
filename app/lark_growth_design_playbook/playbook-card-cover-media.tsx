@@ -245,8 +245,6 @@ type PlaybookCardCoverMediaProps = {
   coverUrl: string | null;
   motionSources: MotionSource[];
   staticBgUrl?: string | null;
-  /** 底图参数化渐变：请传 `heroGradientSeedForRecord(item)`（以多维表格 Slug 列为主种子）。 */
-  seed: string;
   reduceMotion: boolean;
   /** 仅用于调试日志 / data 属性 */
   recordId?: string;
@@ -263,42 +261,29 @@ export function PlaybookCardCoverMedia({
   coverUrl,
   motionSources,
   staticBgUrl,
-  seed,
   reduceMotion,
   recordId,
 }: PlaybookCardCoverMediaProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rewindRafRef = useRef<number | null>(null);
-  const [isSafari, setIsSafari] = useState(false);
-  const [phase, setPhase] = useState<VideoPhase>("idle");
-  const [coverBroken, setCoverBroken] = useState(false);
+  const isSafari =
+    typeof navigator !== "undefined" &&
+    /Safari/i.test(navigator.userAgent) &&
+    !/Chrome|CriOS|Chromium|Android/i.test(navigator.userAgent);
+  const [phaseByUrl, setPhaseByUrl] = useState<Record<string, VideoPhase>>({});
+  const [coverBrokenByUrl, setCoverBrokenByUrl] = useState<Record<string, boolean>>({});
   const debug = playbookDebugEnabled();
 
   const coverDisplayOn = isPlaybookCoverImageEnabled();
+  const coverKey = coverUrl ?? "";
+  const coverBroken = coverKey ? coverBrokenByUrl[coverKey] ?? false : false;
   const hasCover = coverDisplayOn && Boolean(coverUrl) && !coverBroken;
   const hasMotion = motionSources.length > 0;
   const motionUrl = motionSources[0]?.src ?? null;
+  const phase = motionUrl ? phaseByUrl[motionUrl] ?? "idle" : "idle";
   const coverFadesOnHoverToRevealMotion =
     hasCover && hasMotion && !reduceMotion && phase === "loaded";
   const autoplayWithoutCover = false;
-
-  useEffect(() => {
-    if (typeof navigator === "undefined") return;
-    const ua = navigator.userAgent;
-    // Safari: 包含 Safari 但不包含 Chrome/Chromium/Android。
-    const safari =
-      /Safari/i.test(ua) &&
-      !/Chrome|CriOS|Chromium|Android/i.test(ua);
-    setIsSafari(safari);
-  }, []);
-
-  useEffect(() => {
-    setPhase("idle");
-  }, [motionUrl]);
-
-  useEffect(() => {
-    setCoverBroken(false);
-  }, [coverUrl]);
 
   useEffect(() => {
     if (!debug || !recordId) return;
@@ -376,7 +361,9 @@ export function PlaybookCardCoverMedia({
   }, []);
 
   const onVideoLoaded = useCallback(() => {
-    setPhase("loaded");
+    if (motionUrl) {
+      setPhaseByUrl((prev) => ({ ...prev, [motionUrl]: "loaded" }));
+    }
     if (isSafari && !hasCover && !reduceMotion) {
       const v = videoRef.current;
       if (v) {
@@ -391,10 +378,12 @@ export function PlaybookCardCoverMedia({
       }
     }
     if (debug) console.info("[Playbook Motion video] loadeddata", recordId);
-  }, [debug, recordId, isSafari, hasCover, reduceMotion]);
+  }, [debug, recordId, isSafari, hasCover, motionUrl, reduceMotion]);
 
   const onVideoError = useCallback(() => {
-    setPhase("error");
+    if (motionUrl) {
+      setPhaseByUrl((prev) => ({ ...prev, [motionUrl]: "error" }));
+    }
     const v = videoRef.current;
     console.warn("[Playbook Motion video] error（常见：链接过期、403、非视频 MIME）", {
       recordId,
@@ -472,6 +461,7 @@ export function PlaybookCardCoverMedia({
         </video>
       ) : null}
       {coverDisplayOn && coverUrl && !coverBroken ? (
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={coverUrl}
           alt=""
@@ -484,7 +474,9 @@ export function PlaybookCardCoverMedia({
           }`}
           aria-hidden
           onError={() => {
-            setCoverBroken(true);
+            if (coverKey) {
+              setCoverBrokenByUrl((prev) => ({ ...prev, [coverKey]: true }));
+            }
             console.warn("[Playbook Cover img] error", { recordId, src: coverUrl?.slice(0, 120) });
           }}
         />

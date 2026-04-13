@@ -547,6 +547,7 @@ function ImageLightbox({
           <path d="M6 6l12 12" />
         </svg>
       </button>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}
         alt={alt}
@@ -574,10 +575,7 @@ function LazyImage({
   useEffect(() => {
     if (!wrapRef.current) return;
     if (!src) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setIsVisible(true);
-      return;
-    }
+    if (typeof IntersectionObserver === "undefined") return;
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -597,7 +595,8 @@ function LazyImage({
   return (
     <div ref={wrapRef} className={styles.lazyImageWrap}>
       {!isLoaded && <div className={styles.lazyImageSkeleton} />}
-      {isVisible && src ? (
+      {(isVisible || typeof IntersectionObserver === "undefined") && src ? (
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={src}
           alt={alt}
@@ -619,89 +618,6 @@ function LazyImage({
         />
       )}
     </div>
-  );
-}
-
-function ShaderCover({ className }: { className?: string }) {
-  const art = useMemo(() => {
-    const seed = Math.floor(Math.random() * 2147483647) || 1;
-    const rand = (() => {
-      let state = seed;
-      return () => {
-        state |= 0;
-        state = (state + 0x6d2b79f5) | 0;
-        let t = Math.imul(state ^ (state >>> 15), 1 | state);
-        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-      };
-    })();
-
-    const cols = 32;
-    const rows = 18;
-    const width = 1000;
-    const height = 320;
-    const stepX = width / (cols - 1);
-    const stepY = height / (rows - 1);
-    const phaseA = rand() * Math.PI * 2;
-    const phaseB = rand() * Math.PI * 2;
-    const freqA = 0.85 + rand() * 0.6;
-    const freqB = 1.1 + rand() * 0.8;
-
-    const dots = Array.from({ length: rows * cols }, (_, idx) => {
-      const row = Math.floor(idx / cols);
-      const col = idx % cols;
-      const x = col * stepX;
-      const y = row * stepY;
-      const nx = col / (cols - 1);
-      const ny = row / (rows - 1);
-
-      const wave =
-        0.5 +
-        0.5 *
-          Math.sin(nx * Math.PI * 2 * freqA + phaseA + ny * 1.35) *
-          Math.cos(ny * Math.PI * 2 * freqB + phaseB - nx * 1.2);
-      const verticalBias = Math.pow(ny, 1.65);
-      const signal = 0.22 * wave + 0.78 * verticalBias;
-      const jitter = (rand() - 0.5) * 0.22;
-      const radius = 0.55 + signal * 2.1 + jitter;
-      const opacity = 0.06 + signal * 0.24;
-      const visible = ny > 0.2 || rand() > 0.8;
-
-      return {
-        x: Math.round(x * 10) / 10,
-        y: Math.round(y * 10) / 10,
-        r: Math.max(0.45, radius),
-        opacity,
-        visible,
-      };
-    });
-
-    return { dots };
-  }, []);
-
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 1000 320"
-      preserveAspectRatio="xMidYMid slice"
-      aria-hidden="true"
-    >
-      <defs>
-      </defs>
-      <rect width="1000" height="320" fill="#F6F8FC" />
-      {art.dots.map((dot, idx) =>
-        dot.visible ? (
-          <circle
-            key={`dot-${idx}`}
-            cx={dot.x}
-            cy={dot.y}
-            r={dot.r}
-            fill="#4F6FAE"
-            opacity={dot.opacity}
-          />
-        ) : null
-      )}
-    </svg>
   );
 }
 

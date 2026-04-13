@@ -569,7 +569,7 @@ async function handleStreaming(
 
         const result = await streamDocumentBlocks(
           documentId,
-          async (rootLevelItems, _allSoFar) => {
+          async (rootLevelItems) => {
             if (!partialSent) {
               partialSent = true;
               const rootBlocks = rootLevelItems as DocxBlock[];
